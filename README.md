@@ -1,4 +1,4 @@
-<h1> **Beat 2022 European Crises**
+<h1> <b> Beat 2022 European Crises </b>
 <img align='right' src="https://github.com/quang-phong/personal-resources/blob/main/winter-heat-white.gif" width="400px">
 </h1>
 
