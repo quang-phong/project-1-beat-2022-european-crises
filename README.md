@@ -1,7 +1,7 @@
 # Project: BEAT 2022 EUROPEAN CRISES
 
 Author: Quang Phong
-<img src="https://github.com/quang-phong/personal-resources/blob/main/winter-heat.gif" width="30px">
+<img src="https://github.com/quang-phong/personal-resources/blob/main/winter-heat.gif" width="300px">
 
 ## What
 (introduction, abstract, co scope)
