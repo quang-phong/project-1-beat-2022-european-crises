@@ -1,6 +1,12 @@
-<h1> BEAT 2022 EUROPEAN CRISES
-<img align='right' src="https://github.com/quang-phong/personal-resources/blob/main/winter-heat-white.gif" width="300px">
+<h1> **Beat 2022 European Crises**
+<img align='right' src="https://github.com/quang-phong/personal-resources/blob/main/winter-heat-white.gif" width="400px">
 </h1>
+
+[![Linkedin Badge](https://img.shields.io/badge/-@quangphong-0072b1?style=flat&logo=LinkedIn&link=https://www.linkedin.com/in/quangphong/)](https://www.linkedin.com/in/quangphong/) 
+[![Github Badge](https://img.shields.io/badge/-@quang--phong-171515?style=flat&logo=github&logoColor=white&link=https://github.com/quang-phong?tab=repositories)](https://github.com/quang-phong?tab=repositories)
+[![Email Badge](https://img.shields.io/badge/-quangtrieuphong@outlook.com-00a2ed?style=flat&logo=microsoftoutlook&logoColor=white&link=mailto:quangtrieuphong@outlook.com)](mailto:quangtrieuphong@outlook.com)
+
+
 Project: 
 Author: Quang Phong
 
@@ -20,7 +26,7 @@ This repository contains 3 main folders:
     + final (the data set ready for modelling)
 - **src** 
 - **deliverable** (study defense in which I summarize the whole project)
-For full report (thesis), please leave a message at https://www.linkedin.com/in/quangphong/).
+For full report (thesis), please leave a message at my LinkedIn or email me).
 
 ## Result (with some visuals?)
 
