@@ -1,5 +1,5 @@
 <h1> Project: BEAT 2022 EUROPEAN CRISES
-<img src="https://github.com/quang-phong/personal-resources/blob/main/winter-heat.gif" width="300px">
+<img align='right' src="https://github.com/quang-phong/personal-resources/blob/main/winter-heat.gif" width="300px">
 </h1>
 
 Author: Quang Phong
