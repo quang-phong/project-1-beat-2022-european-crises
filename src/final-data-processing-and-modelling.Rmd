@@ -1,0 +1,2601 @@
+---
+title: "Thesis - Final"
+author: "Quang Phong - 6286943"
+date: '2022-08-20'
+output: html_document
+  html_document:
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = normalizePath("D:/OneDrive/1st-goal-innovation/project-master-thesis-20220715/2-data/0-official"))
+```
+
+```{r, warning=FALSE, message=FALSE}
+## LIBRARY
+library(tidyr)
+library(dplyr)
+library(imputeTS)
+library(ggplot2)
+library(caret)
+library(xgboost)
+library(tseries)
+library(hms)
+library(forecast)
+library(astsa)
+library(lubridate)
+library(ggthemes)
+library(lattice)
+library(ggstatsplot)
+library(lares)
+library(gtsummary)
+library(randomForest)
+library(webshot2)
+library(caTools)
+library(ROCR) 
+library(e1071)
+ggthemr::ggthemr("fresh")
+```
+
+
+# 1. DATA CLEANING ----------------------------------
+
+
+```{r}
+options(tz=Sys.timezone())
+```
+
+# Load data
+
+```{r}
+# LOAD TARGET VARIABLE
+df_MainOccupancy <- read.csv("main-occupancy.csv")
+```
+
+
+```{r}
+# LOAD INDEPENDENT VARIABLE
+df_MainIndoorAir <- read.csv("main-indoor-air.csv")
+df_MainWeather30Min1 <- read.csv("main-weather-30-minute-1.csv")
+df_MainWeather30Min2 <- read.csv("main-weather-30-minute-2.csv")
+df_MainWeatherHourly <- read.csv("main-weather-hourly.csv")
+```
+
+# Preprocess data
+
+```{r}
+# PREPROCESS MAIN OCCUPANCY
+
+# rename columns
+colnames(df_MainOccupancy) <- c("time", "dayOfWeek", "weekDay", "workHour", "people", "occupancyNote")
+# convert time to date-time format
+df_MainOccupancy$time <- as.POSIXct(df_MainOccupancy$time)
+# convert dayOfWeek, workHour weekDay to factors
+df_MainOccupancy$dayOfWeek <- factor(df_MainOccupancy$dayOfWeek,
+                                     levels = c("Monday", "Tuesday", "Wednesday",
+                                                "Thursday", "Friday", "Saturday", "Sunday"))
+df_MainOccupancy$weekDay <- as.factor(df_MainOccupancy$weekDay)
+df_MainOccupancy$workHour <- as.factor(df_MainOccupancy$workHour)
+# Change observations from 2022-07-05 02:05 to 07:30 to NA (because we lack info from Air sensors during that time. So that later when we merge all data to the data set, we will remove these observations by removing NA)
+df_MainOccupancy[(df_MainOccupancy$time >= "2022-07-05 02:05:00") & (df_MainOccupancy$time <= "2022-07-05 07:30:00"), "people"] <- NA
+
+str(df_MainOccupancy)
+```
+
+
+
+```{r}
+# PREPROCESS MAIN INDOOR AIR
+
+# convert time to date-time format
+df_MainIndoorAir$Time <- as.POSIXct(df_MainIndoorAir$Time)
+# reorder time
+df_MainIndoorAir <- df_MainIndoorAir[order(df_MainIndoorAir$Time), ]
+# select obs from Jun 16 to Jul 11
+df_MainIndoorAir <- df_MainIndoorAir[df_MainIndoorAir$Time >= "2022-06-16 00:00:00" &
+                                       df_MainIndoorAir$Time <= "2022-07-11 07:29:00"
+                                     , ]
+# ensure each observation has data for 7 variables
+df_MainIndoorAir %>% 
+  group_by(Time) %>%
+  filter(n() != 7)
+# remove that time observation
+df_MainIndoorAir <- subset(df_MainIndoorAir, Time != "2022-07-01 09:05:00")
+# create wide table from long table
+df_MainIndoorAir <- pivot_wider(df_MainIndoorAir, names_from = Datastream.Name, values_from = Value)
+# remove ABCstatus column
+df_MainIndoorAir <- df_MainIndoorAir[, 1:7]
+# rename columns
+colnames(df_MainIndoorAir) <-  c("time", "inCo2", "inPressure", "inTemp", "inHumid", "inPart2_5", "inPart10")
+# convert 0 values to NA
+df_MainIndoorAir[df_MainIndoorAir==0] <- NA
+# check space between observations
+df_MainIndoorAir %>%
+  mutate(diff = time - lag(time)) %>%
+  filter(diff != 2)
+  # Only one big gap of 535 mins, which will be later removed after all it is not in occupancy data, and it won't affect
+
+# shift these observations within this time (from even minute to odd minute)
+df_new <- data.frame(time = seq(from = as.POSIXct("2022-07-05 11:01:00"), to = as.POSIXct("2022-07-07 12:23:00"), by = "2 mins"), inCo2 = NA, inPressure = NA, inTemp = NA, inHumid = NA, inPart2_5= NA, inPart10 = NA)
+
+df_MainIndoorAir <- rbind(df_MainIndoorAir, df_new)
+df_MainIndoorAir <- df_MainIndoorAir[order(df_MainIndoorAir$time), ]
+
+df_MainIndoorAir[df_MainIndoorAir$time <= "2022-07-07 12:23:00" & df_MainIndoorAir$time >=  "2022-07-05 11:01:00",] <- na_interpolation(df_MainIndoorAir[df_MainIndoorAir$time <= "2022-07-07 12:23:00" & df_MainIndoorAir$time >=  "2022-07-05 11:01:00",])
+
+rm(df_new)
+```
+
+
+```{r}
+# PREPROCESS WEATHER DATA
+
+# select only useful features
+df_MainWeather30Min1 <- df_MainWeather30Min1[,c(2,5)]
+df_MainWeather30Min2 <- df_MainWeather30Min2[,c(2,3)]
+df_MainWeatherHourly <- df_MainWeatherHourly[,c(2,3,5,15)]
+
+# rename columns
+colnames(df_MainWeather30Min1) <- c("time", "outHumid")
+colnames(df_MainWeather30Min2) <- c("time", "outTemp")
+colnames(df_MainWeatherHourly) <- c("date", "hour", "windSpeed", "outPressure")
+
+# convert time to date-time format
+df_MainWeather30Min1$time <- as.POSIXct(df_MainWeather30Min1$time)
+df_MainWeather30Min2$time <- as.POSIXct(df_MainWeather30Min2$time)
+df_MainWeatherHourly$time <- as.POSIXct(paste(substr(df_MainWeatherHourly$date, 1,4),
+                                              "-",
+                                              substr(df_MainWeatherHourly$date, 5,6),
+                                              "-",
+                                              substr(df_MainWeatherHourly$date, 7,8),
+                                              " ", df_MainWeatherHourly$hour, ":00", sep=""))
+df_MainWeatherHourly <- df_MainWeatherHourly[,c(5,4,3)]
+
+
+# convert mean wind speed to m/s and air pressure to hPa
+df_MainWeatherHourly$outPressure <- df_MainWeatherHourly$outPressure/10
+df_MainWeatherHourly$windSpeed <- df_MainWeatherHourly$windSpeed/10
+
+# merge weather30min1 and 2
+df_MainWeather30Min <- df_MainWeather30Min1 %>% 
+  inner_join(df_MainWeather30Min2, by="time")
+
+
+str(df_MainWeather30Min)
+str(df_MainWeatherHourly)
+
+# check NA
+df_MainWeather30Min[rowSums(is.na(df_MainWeather30Min)) > 0, ]   
+df_MainWeatherHourly[rowSums(is.na(df_MainWeatherHourly)) > 0, ]
+
+```
+
+# 2. EDA --------------------------------------------------
+# Descriptive data
+
+```{r}
+## occupancy
+
+# summary
+
+sumOccDay <- tbl_summary(df_MainOccupancy[!is.na(df_MainOccupancy$people) 
+                      & df_MainOccupancy$weekDay == "weekday"
+                      & df_MainOccupancy$workHour == "working",c("time", 
+                                                                 "dayOfWeek",
+                                                                 "weekDay",
+                                                                 "workHour",
+                                                                 "people")],
+                       statistic = list(c("people") ~ "{mean} ({sd}) ({min}, {max})"))
+sumOccDay %>%    # build gtsummary table
+  as_gt() %>%             # convert to gt table
+  gt::gtsave(             # save table as image
+    filename = "sumOccDay.png"
+  )
+
+
+# hist
+histOccDay <- ggplot(df_MainOccupancy[!is.na(df_MainOccupancy$people) 
+                      & df_MainOccupancy$weekDay == "weekday"
+                      & df_MainOccupancy$workHour == "working",c("time", 
+                                                                 "dayOfWeek",
+                                                                 "weekDay",
+                                                                 "workHour",
+                                                                 "people")], aes(x=people)) + 
+  geom_histogram(bins = 31, color="white") 
+histOccDay
+ggsave("histOccDay.png")
+```
+```{r}
+# stationarity check for occupancy
+adf.test(df_MainOccupancy[df_MainOccupancy$time >= "2022-07-07 09:10:00"
+                          & df_MainOccupancy$time <= "2022-07-07 17:08:00",]$people)
+
+kpss.test(df_MainOccupancy[df_MainOccupancy$time >= "2022-07-07 09:10:00"
+                          & df_MainOccupancy$time <= "2022-07-07 17:08:00",]$people)
+```
+
+```{r}
+## indoor air
+
+# summary
+
+sumIn <- tbl_summary(df_MainIndoorAir,
+                        statistic = list(c("inCo2", "inPressure", "inTemp", "inHumid", "inPart2_5",
+                                           "inPart10") ~ "{mean} ({sd}) ({min}, {max})"))
+sumIn
+sumIn %>%    # build gtsummary table
+  as_gt() %>%             # convert to gt table
+  gt::gtsave(             # save table as image
+    filename = "sumIn.png"
+  )
+
+
+# hist
+histInDay <- ggplot(df_MainIndoorAir, aes(x=inCo2)) + 
+  geom_histogram(bins = 20,color="white")
+histInDay
+ggsave("histInDay.png")
+```
+
+
+
+```{r}
+## outdoor air
+
+# summary
+
+sumOut1 <- tbl_summary(df_MainWeather30Min,
+                       statistic = list(c("outHumid", "outTemp") ~ "{mean} ({sd}) ({min}, {max})"))
+sumOut1
+
+sumOut1 %>%    # build gtsummary table
+  as_gt() %>%             # convert to gt table
+  gt::gtsave(             # save table as image
+    filename = "sumOut1.png"
+  )
+
+sumOut2 <- tbl_summary(df_MainWeatherHourly,
+                       type = list(windSpeed ~ 'continuous'),
+                       statistic = list(c("outPressure", "windSpeed") ~ "{mean} ({sd}) ({min}, {max})"))
+sumOut2
+
+sumOut2 %>%    # build gtsummary table
+  as_gt() %>%             # convert to gt table
+  gt::gtsave(             # save table as image
+    filename = "sumOut2.png"
+  )
+
+```
+
+# Descriptive data for research period
+
+
+```{r}
+
+# Merge to 2-min dataset
+
+# occupancy
+df2MinMain <- df_MainOccupancy
+
+# create 2-minutely average occupancy (last minute and this minute)
+
+df2MinMain <- df2MinMain %>%
+    mutate(people = (lag(people, 1)+people)/2)
+
+# indoor air 
+df2MinMain_IndoorAir <- as.data.frame(
+  df_MainIndoorAir %>%
+    summarize(time= seq(min(time), max(time), by = 120)) %>%
+    left_join(df_MainIndoorAir, by="time")
+)
+
+df2MinMain_IndoorAir <- na_interpolation(df2MinMain_IndoorAir)
+
+# 30-min weather data to 1-minute, impute missing data using linear interpolation
+df2MinMain_Weather30Min <- as.data.frame(
+  df_MainWeather30Min %>%
+    summarize(time= seq(min(time), max(time), by = 60)) %>%
+    left_join(df_MainWeather30Min, by="time")
+)
+
+df2MinMain_Weather30Min <- na_interpolation(df2MinMain_Weather30Min)
+
+# hourly weather data to 1-minute, impute missing data using linear interpolation
+df2MinMain_WeatherHourly <- as.data.frame(
+  df_MainWeatherHourly %>%
+    summarize(time= seq(min(time), max(time), by = 60)) %>%
+    left_join(df_MainWeatherHourly, by="time")
+)
+
+df2MinMain_WeatherHourly <- na_interpolation(df2MinMain_WeatherHourly)
+
+# merge them in to one dataset
+df2MinMain <- df2MinMain %>%
+  right_join(df2MinMain_IndoorAir, by="time") %>%
+  left_join(df2MinMain_Weather30Min, by="time") %>%
+  left_join(df2MinMain_WeatherHourly, by="time")
+
+# Add periodic occupancy validation to data
+df2MinMain$peopleEvery30Min <- NA
+df2MinMain$dCo2since30Min <- NA
+df2MinMain$dMinSince30Min <- NA
+
+count <- 0
+for (i in 1:nrow(df2MinMain)) {
+
+  if (count == 0 & is.na(df2MinMain[i, "people"]) == FALSE) {
+    df2MinMain[i, "peopleEvery30Min"] <- df2MinMain[i, "people"]
+    df2MinMain[i, "dCo2since30Min"] <- 0
+    df2MinMain[i, "dMinSince30Min"] <- 0
+    count <- count + 1
+  }
+  else if (is.na(df2MinMain[i, "people"]) == FALSE) {
+    df2MinMain[i, "peopleEvery30Min"] <- df2MinMain[i-count, "peopleEvery30Min"]
+    df2MinMain[i, "dCo2since30Min"] <- df2MinMain[i, "inCo2"] - df2MinMain[i-count, "inCo2"]
+    df2MinMain[i, "dMinSince30Min"] <- count*2
+    count <- count + 1
+    if (count == 15) {
+      count <- 0
+    }
+
+  }
+  else {
+    count <- 0
+  }
+}
+
+
+#### df2MinMainWeekday
+
+df2MinMainWeekday <- df2MinMain
+
+# here convert all occupancy in weekday and non-working hours to NA to help binning in this dataset
+df2MinMainWeekday[df2MinMainWeekday$weekDay!="weekday" | df2MinMainWeekday$workHour!="working", "people"]<- NA
+
+# look at histogram and summary to decide on data binning 2 bins and 3 bins (decide on equal frequency, not equal width)
+ggplot(df2MinMainWeekday, aes(x=people)) + 
+  geom_histogram(fill="lightgreen", color="grey50")
+hist(df2MinMainWeekday$people)$count
+summary(df2MinMainWeekday$people)
+
+# binning to 2 (0 and 1 for empty ( excluding me as a researcher always there), 2 and more is occupied)
+df2MinMainWeekday$people2Bin <- cut(df2MinMainWeekday$people, 
+                  breaks=c(0,2,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("empty","occupied"))
+
+# inspect bins
+summary(df2MinMainWeekday$people2Bin)
+
+# binning to 2 in a way that the target (without weekend and non-working hours) is equally divided (equal frequency)
+df2MinMainWeekday$people2EqualBin <- cut(df2MinMainWeekday$people, 
+                  breaks=c(0,4,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-3","4-and-higher"))
+
+# inspect bins
+summary(df2MinMainWeekday$people2EqualBin)
+
+# binning to 3 in a way that the target (without weekend and non-working hours) has equal width
+df2MinMainWeekday$people3Bin <- cut(df2MinMainWeekday$people, 
+                  breaks=c(0,10,20,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-9","10-to-19", "20-and-higher"))
+
+# inspect bins
+summary(df2MinMainWeekday$people3Bin)
+
+
+# binning to 3 in a way that the target (without weekend and non-working hours) is equally divided (equal frequency)
+df2MinMainWeekday$people3EqualBin <- cut(df2MinMainWeekday$people, 
+                  breaks=c(0,2,6,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-1","2-to-5", "6-and-higher"))
+
+# inspect bins
+summary(df2MinMainWeekday$people3EqualBin)
+
+
+df2MinMainWeekday$halfHour <- round_date(df2MinMainWeekday$time+10*60, "30 minutes") 
+df2MinMainWeekday$halfHour2 <- format(strptime(df2MinMainWeekday$halfHour,"%Y-%m-%d %H:%M"),'%H:%M')
+
+# occupancy change
+df2MinMainWeekday$peopleChange <- factor(ifelse(df2MinMainWeekday$people >
+                                                  lag(df2MinMainWeekday$people,1), 
+                                                "increase", 
+                                                ifelse(df2MinMainWeekday$people ==
+                                                  lag(df2MinMainWeekday$people,1), 
+                                                "unchanged", 
+                                                "decrease")),
+                                         levels = c("decrease", "unchanged", "increase"))
+
+
+
+# remove weekend and non-working hour in this dataset
+df2MinMainWeekday <- subset(df2MinMainWeekday, weekDay=="weekday" & workHour=="working")
+
+# remove observations with NA values in occupancy and lagged values of variables here
+df2MinMainWeekday <- df2MinMainWeekday[rowSums(is.na(df2MinMainWeekday)) == 0, ]  
+
+# reset index
+rownames(df2MinMainWeekday) <- NULL
+
+
+
+
+
+```
+
+
+```{r}
+## indoor air
+
+# summary
+
+sumIn2 <- tbl_summary(df2MinMainWeekday[, c(1,7:12)],
+                      type = list(inPart2_5 ~ 'continuous'),
+                      statistic = list(c("inCo2", "inPressure", "inTemp", "inHumid",
+                                           "inPart2_5", "inPart10") ~ "{mean} ({sd}) ({min},
+                                         {max})"))
+sumIn2
+sumIn2 %>%    # build gtsummary table
+  as_gt() %>%             # convert to gt table
+  gt::gtsave(             # save table as image
+    filename = "sumIn2.png"
+  )
+
+
+# hist
+histIn2 <- ggplot(df2MinMainWeekday[, c(1,7:12)], aes(x=inCo2)) + 
+  geom_histogram(binwidth  = 50,color="white") +
+  geom_vline(xintercept = 800, linetype="dashed", size=1.5, color = "#E84646") +
+  geom_text(aes(x=800, label="\nCO2 threshold for offices", y=250), colour="#E84646", angle=90, text=element_text(size=10))
+histIn2
+ggsave("histIn2.png")
+
+```
+
+
+
+```{r}
+## outdoor air
+
+# summary
+
+sumOut3 <- tbl_summary(df2MinMainWeekday[, c(1, 13:14)],
+                       statistic = list(c("outHumid", "outTemp") ~ "{mean} ({sd}) ({min},
+                                        {max})"))
+sumOut3
+
+sumOut3 %>%    # build gtsummary table
+  as_gt() %>%             # convert to gt table
+  gt::gtsave(             # save table as image
+    filename = "sumOut3.png"
+  )
+
+sumOut4 <- tbl_summary(df2MinMainWeekday[, c(1, 15:16)],
+                       type = list(windSpeed ~ 'continuous'),
+                       statistic = list(c("outPressure", "windSpeed") ~ "{mean} ({sd}) ({min},
+                                        {max})"))
+sumOut4
+
+sumOut4 %>%    # build gtsummary table
+  as_gt() %>%             # convert to gt table
+  gt::gtsave(             # save table as image
+    filename = "sumOut4.png"
+  )
+
+```
+
+# 3. Feature selection
+
+
+
+```{r}
+df2MinMainWeekday$date <- format(strptime(df2MinMainWeekday$time,"%Y-%m-%d %H"),'%m-%d')
+
+
+halfHourOcc <- df2MinMainWeekday %>% 
+  group_by(date, halfHour2) %>%
+  summarize(meanOccupancy = mean(people)) %>%
+  ggplot(aes(halfHour2, date)) + 
+    geom_tile(aes(fill = meanOccupancy),colour = "white") +
+    scale_fill_gradient2(low = "white", mid = "#DEDE9A", high = "#316675", midpoint = 8) +
+  xlab ("halft hour") +
+  theme(axis.text.x = element_text(angle = 90))
+halfHourOcc
+ggsave("halfHourOcc.png")
+```
+
+
+
+```{r}
+
+
+halfHourCo2 <- df2MinMainWeekday %>% 
+  group_by(date, halfHour2) %>%
+  summarize(meanCO2 = mean(inCo2)) %>%
+  ggplot(aes(halfHour2, date)) + 
+    geom_tile(aes(fill = meanCO2),colour = "white") +
+    scale_fill_gradient2(low = "white", mid = "#EC8E8E", high = "#E84646", midpoint = 1000) +
+  xlab ("halft hour") +
+  theme(axis.text.x = element_text(angle = 90))
+halfHourCo2
+ggsave("halfHourCo2.png")
+```
+
+```{r}
+## Correlation between occupancy and indoor and outdoor variables
+ggstatsplot::ggcorrmat(
+  data = df2MinMainWeekday[, c(5, 7:16)],
+  type = "parametric", # parametric for Pearson, nonparametric for Spearman's correlation
+  colors = c("#EB0F0F", "white", "#0095A8") # change default colors
+)
+ggsave("cor1.png")
+```
+```{r}
+## Correlation between occupancy and indoor, outdoor difference
+df2MinMainWeekday$diffTemp <- df2MinMainWeekday$outTemp - df2MinMainWeekday$inTemp
+df2MinMainWeekday$diffHumid <- df2MinMainWeekday$outHumid - df2MinMainWeekday$inHumid
+df2MinMainWeekday$diffPressure <- df2MinMainWeekday$outPressure - df2MinMainWeekday$inPressure
+
+ggstatsplot::ggcorrmat(
+  data = df2MinMainWeekday[, c(5, 27:29)],
+  type = "parametric", # parametric for Pearson, nonparametric for Spearman's correlation
+  colors = c("#EB0F0F", "white", "#0095A8") # change default colors
+)
+ggsave("cor2.png")
+
+```
+
+
+```{r}
+## Correlation between occupancy deltas and indoor, outdoor deltas
+df2MinMainWeekday_key <- c("people",
+             "inCo2", "inPressure", "inTemp", "inHumid", "inPart2_5", "inPart10",
+             "outHumid", "outTemp", "outPressure", "windSpeed")
+df2MinMainWeekday <- df2MinMainWeekday %>%
+    mutate(across(.cols = df2MinMainWeekday_key,
+                     .fns = list(dlag1 = function(x) x - lag(x, n = 1),
+                                 dlead1 = function(x) lead(x, n = 1) - x)))
+
+
+ggstatsplot::ggcorrmat(
+  data = df2MinMainWeekday[, c(seq(30,49,2))],
+  type = "parametric", # parametric for Pearson, nonparametric for Spearman's correlation
+  colors = c("#EB0F0F", "white", "#0095A8") # change default colors
+)
+ggsave("cor3.png")
+```
+
+
+```{r}
+## Correlation between occupancy delta and indoor, outdoor derivatives
+
+
+ggstatsplot::ggcorrmat(
+  data = df2MinMainWeekday[, c(30, seq(33,50,2))],
+  type = "parametric", # parametric for Pearson, nonparametric for Spearman's correlation
+  colors = c("#EB0F0F", "white", "#0095A8") # change default colors
+)
+ggsave("cor4.png")
+```
+
+```{r}
+## Correlation between occupancy  and indoor, outdoor derivatives
+
+
+ggstatsplot::ggcorrmat(
+  data = df2MinMainWeekday[, c(5, seq(33,50,2))],
+  type = "parametric", # parametric for Pearson, nonparametric for Spearman's correlation
+  colors = c("#EB0F0F", "white", "#0095A8") # change default colors
+)
+ggsave("cor5.png")
+```
+
+```{r}
+## Correlation between occupancy derivatives  and indoor, outdoor derivatives
+
+
+ggstatsplot::ggcorrmat(
+  data = df2MinMainWeekday[, c(seq(31,50,2))],
+  type = "parametric", # parametric for Pearson, nonparametric for Spearman's correlation
+  colors = c("#EB0F0F", "white", "#0095A8") # change default colors
+)
+ggsave("cor6.png")
+```
+
+
+
+
+```{r}
+corr_var(df2MinMainWeekday %>% select(-contains(c("Bin" ,"Every"))), # name of dataset
+  people, # name of variable to focus on
+  top = 10 # display top 5 correlations
+)
+ggsave("corPeople.png")
+```
+
+```{r}
+
+corr_var(df2MinMainWeekday %>% select(-contains(c("Bin" ,"Every"))), # name of dataset
+  people_dlag1, # name of variable to focus on
+  top = 10 # display top 5 correlations
+)
+ggsave("corPeopleDLag1.png")
+```
+
+
+
+
+
+
+# 4. Feature engineering for ventilation
+
+```{r}
+df_MainIndoorAir3 <- df_MainIndoorAir
+df_MainIndoorAir3$date <- format(strptime(df_MainIndoorAir3$time,"%Y-%m-%d %H:%M"),'%m-%d')
+df_MainIndoorAir3$hour <- format(strptime(df_MainIndoorAir3$time,"%Y-%m-%d %H:%M"),'%H:%M')
+# Smooth CO2 data: mean 12
+df_MainIndoorAir3 <- df_MainIndoorAir3 %>%
+  group_by(date) %>%
+  mutate(inCo2_lag1 = lag(inCo2, 1L),
+         inCo2_lag2 = lag(inCo2, 2L),
+         inCo2_lag3 = lag(inCo2, 3L),
+         inCo2_lead1 = lead(inCo2, 1L),
+         inCo2_lead2 = lead(inCo2, 2L),
+         inCo2_lead3 = lead(inCo2, 3L))
+
+df_MainIndoorAir3 <- df_MainIndoorAir3[rowSums(is.na(df_MainIndoorAir3)) == 0, ]  
+
+df_MainIndoorAir3 <- df_MainIndoorAir3 %>%
+  group_by(date) %>%
+  mutate(inCo2_mean12 = rowMeans(cbind(inCo2_lag1,
+                             inCo2_lag2,
+                             inCo2_lag3,
+                             inCo2,
+                             inCo2_lead1,
+                             inCo2_lead2,
+                             inCo2_lead3)))
+
+# Smooth CO2 data: median 12
+df_MainIndoorAir3 <- df_MainIndoorAir3 %>%
+  group_by(date) %>%
+  rowwise() %>%
+  mutate(inCo2_med12 = median(cbind(inCo2_lag1,
+                             inCo2_lag2,
+                             inCo2_lag3,
+                             inCo2,
+                             inCo2_lead1,
+                             inCo2_lead2,
+                             inCo2_lead3)))
+
+# Smooth temp data: 
+
+df_MainIndoorAir3 <- df_MainIndoorAir3 %>%
+  group_by(date) %>%
+  mutate(inCo2_lag1 = lag(inCo2, 1L),
+         inCo2_lag2 = lag(inCo2, 2L),
+         inCo2_lag3 = lag(inCo2, 3L),
+         inCo2_lead1 = lead(inCo2, 1L),
+         inCo2_lead2 = lead(inCo2, 2L),
+         inCo2_lead3 = lead(inCo2, 3L))
+
+# add outdoor temperature 
+x <- as.data.frame(
+  df_MainWeather30Min %>%
+    summarize(time= seq(min(time), max(time), by = 60)) %>%
+    left_join(df_MainWeather30Min, by="time")
+)
+x
+x <- na_interpolation(x)
+
+# add outdoor temperature to data here
+df_MainIndoorAir3 <-  left_join(df_MainIndoorAir3, x, by = "time")
+
+
+# create + add 2-minutely average occupancy (last minute and this minute)
+
+y <- df_MainOccupancy %>%
+    mutate(people = (lag(people, 1)+people)/2)
+
+df_MainIndoorAir3 <- y %>%
+  right_join(df_MainIndoorAir3, by="time")
+
+
+
+# Visualize every day + occupancy every 2 min
+
+df_MainIndoorAir3 %>%
+  group_by(date) %>% 
+  filter(hour <= "20:30" & hour >= "08:30") %>%
+  do ({
+
+    print(ggplot(.) +
+            geom_line(aes(x = time, y = inTemp), col = "blue") +
+            #geom_line(aes(x = time, y = outTemp), col = "green") +
+            #geom_line(aes(x = time, y = inCo2/30), col = "red") +
+            geom_line(aes(x = time, y = inCo2_med12/30), col = "orange") +
+            geom_line(aes(x = time, y = inCo2_mean12/30), col = "purple") +
+            geom_line(aes(x = time, y = people), col = "brown") +
+            scale_y_continuous(name="Temperature",
+                               sec.axis = sec_axis(~.*30, name = "CO2")) +
+            labs(title="Plot of indoor smoothed CO2, indoor temperature, and occupancy "))
+  })
+
+
+# Detect binary hvac cooling ventilation method:
+# assume there are 3 modes (one hot coding): mode no ventilation (increased co2 when ), mode ventilation is on together with AC working, mode ventilation without 
+```
+
+```{r}
+
+df_MainIndoorAir3$phase1 <- NA
+df_MainIndoorAir3$changingTemp <- 0
+df_MainIndoorAir3$acMode <- NA
+df_MainIndoorAir3$ventMode <- "off"
+
+df_MainIndoorAir3 <- df_MainIndoorAir3[df_MainIndoorAir3$hour >= "08:00"
+                                       & df_MainIndoorAir3$hour <= "21:00",]
+
+for (date_ in unique(df_MainIndoorAir3$date)) {
+  df_MainIndoorAir3[df_MainIndoorAir3$date == date_, "dCO2_mean12_lead1"] <-
+    lead(df_MainIndoorAir3[df_MainIndoorAir3$date == date_, "inCo2_mean12"], 1) -
+    df_MainIndoorAir3[df_MainIndoorAir3$date == date_, "inCo2_mean12"]
+  
+  
+  df_MainIndoorAir3[df_MainIndoorAir3$date == date_, "dCO2_mean12_lead2"] <-
+    lead(df_MainIndoorAir3[df_MainIndoorAir3$date == date_, "inCo2_mean12"], 2) -
+    df_MainIndoorAir3[df_MainIndoorAir3$date == date_, "inCo2_mean12"]
+
+}
+
+df_MainIndoorAir3[1, "phase1"] <- 0
+phase_ <- 0
+for (i in 2:nrow(df_MainIndoorAir3)) {
+  if (df_MainIndoorAir3[i, "date"] == df_MainIndoorAir3[i-1, "date"]) {
+    if (df_MainIndoorAir3[i, "inTemp"] == df_MainIndoorAir3[i-1, "inTemp"]) {
+      df_MainIndoorAir3[i, "phase1"] <- phase_
+    }
+    else {
+      phase_ <- phase_ + 1
+      df_MainIndoorAir3[i, "phase1"] <- phase_
+    }
+  }
+  else {
+    phase_ <- phase_ + 1
+    df_MainIndoorAir3[i, "phase1"] <- phase_
+  }
+  
+}
+
+dfTempPhase <- df_MainIndoorAir3 %>% 
+  group_by(date, phase1) %>%
+  summarize(mean = mean(inTemp))
+
+dfTempPhase$phase2 <- NA
+
+for (i in 2:(nrow(dfTempPhase)-1)) {
+  if (dfTempPhase[i, "date"] == dfTempPhase[i-1, "date"] &
+      dfTempPhase[i, "date"] == dfTempPhase[i+1, "date"]) {
+    if (dfTempPhase[i, "mean"] > dfTempPhase[i-1, "mean"] &
+        dfTempPhase[i, "mean"] > dfTempPhase[i+1, "mean"]) {
+      dfTempPhase[i, "phase2"] <- "higher"
+    }
+    else if (dfTempPhase[i, "mean"] < dfTempPhase[i-1, "mean"] &
+        dfTempPhase[i, "mean"] < dfTempPhase[i+1, "mean"]) {
+      dfTempPhase[i, "phase2"] <- "lower"
+    }
+    else {
+      dfTempPhase[i, "phase2"] <- "transitional"
+    }
+  }
+  else if (dfTempPhase[i, "date"] != dfTempPhase[i-1, "date"]) {
+    if (dfTempPhase[i, "mean"] > dfTempPhase[i+1, "mean"]) {
+      dfTempPhase[i, "phase2"] <- "higher"
+    }
+    else {
+      dfTempPhase[i, "phase2"] <- "lower"
+    }
+  }
+  else if (dfTempPhase[i, "date"] != dfTempPhase[i+1, "date"]) {
+    if (dfTempPhase[i, "mean"] > dfTempPhase[i-1, "mean"]) {
+      dfTempPhase[i, "phase2"] <- "higher"
+    }
+    else {
+      dfTempPhase[i, "phase2"] <- "lower"
+    }
+  }
+}
+
+dfTempPhase[1, "phase2"] <- "lower"
+dfTempPhase[nrow(dfTempPhase), "phase2"] <- "lower"
+dfTempPhase <- dfTempPhase[, -c(1,3)]
+
+df_MainIndoorAir3 <- left_join(df_MainIndoorAir3, dfTempPhase,
+                               by = "phase1") 
+  
+  
+dfPeakTemp <- df_MainIndoorAir3 %>% 
+  group_by(phase1) %>%
+  summarize(indexPeak = which.max(inCo2_mean12))
+
+dfBotTemp <- df_MainIndoorAir3 %>% 
+  group_by(phase1) %>%
+  summarize(indexBot = which.min(inCo2_mean12))
+
+for (i in 1:(nrow(df_MainIndoorAir3))) {
+  phase1_ <- df_MainIndoorAir3[i, "phase1"]
+  
+  if (df_MainIndoorAir3[i, "phase2"] == "higher") {
+    if (i == dfPeakTemp[dfPeakTemp$phase1 == phase1_, "indexPeak"] + 
+        nrow(df_MainIndoorAir3[df_MainIndoorAir3$phase1 >= 0 &
+                               df_MainIndoorAir3$phase1 <=(phase1_ - 1),])) {
+      df_MainIndoorAir3[i, "changingTemp"] <- "peak"
+    }
+  }
+  else if (df_MainIndoorAir3[i, "phase2"] == "lower") {
+    if (i == dfBotTemp[dfBotTemp$phase1 == phase1_, "indexBot"] + 
+         nrow(df_MainIndoorAir3[df_MainIndoorAir3$phase1 >= 0 &
+                               df_MainIndoorAir3$phase1 <=(phase1_ - 1),])) {
+      df_MainIndoorAir3[i, "changingTemp"] <- "bot"
+    }
+  }
+}
+
+
+# create AC mode
+
+for (i in 1:nrow(df_MainIndoorAir3)) {
+
+    if (df_MainIndoorAir3[i, "changingTemp"] == "bot") {
+      df_MainIndoorAir3[i, "acMode"] <- 0 
+      latest <- "bot"
+    }
+    else if (df_MainIndoorAir3[i, "changingTemp"] == "peak") {
+      df_MainIndoorAir3[i, "acMode"] <- 1 
+      latest <- "peak"
+    }
+    else {
+      if (latest=="bot") {
+        df_MainIndoorAir3[i, "acMode"] <- 0 
+      }
+      else {
+        df_MainIndoorAir3[i, "acMode"] <- 1
+      }
+    }
+}
+
+hist(df_MainIndoorAir3$acMode)
+
+df_MainIndoorAir3[df_MainIndoorAir3$acMode == 1, ]$ventMode <- "on, with AC"
+df_MainIndoorAir3 <- df_MainIndoorAir3[is.na(df_MainIndoorAir3$dCO2_mean12_lead1) == FALSE, ]  
+df_MainIndoorAir3 <- df_MainIndoorAir3[is.na(df_MainIndoorAir3$dCO2_mean12_lead2) == FALSE, ] 
+df_MainIndoorAir3[df_MainIndoorAir3$acMode == 0 &
+                    df_MainIndoorAir3$dCO2_mean12_lead1 < 0 &
+                    df_MainIndoorAir3$dCO2_mean12_lead1 < 0, ]$ventMode <- "on, without AC"
+
+# 2 ways of presenting these modes
+df_MainIndoorAir3$ventilationA <- ifelse(df_MainIndoorAir3$ventMode == "off", 0, 1)
+df_MainIndoorAir3$ventilationB1 <- ifelse(df_MainIndoorAir3$ventMode == "on, with AC", 1, 0)
+df_MainIndoorAir3$ventilationB2 <- ifelse(df_MainIndoorAir3$ventMode == "on, without AC", 1, 0)
+
+
+
+ 
+
+df_MainIndoorAir3 %>%
+  group_by(date) %>% 
+  do ({
+  
+    print(ggplot(.) +
+            geom_line(aes(x = time, y = inTemp), col = "blue") +
+            geom_line(aes(x = time, y = inCo2_mean12/30), col = "purple") +
+            geom_line(aes(x = time, y = people), col = "#0095A8") +
+            scale_y_continuous(name="Temperature",
+                               sec.axis = sec_axis(~.*30, name = "CO2")) +
+            geom_vline(xintercept = df_MainIndoorAir3[df_MainIndoorAir3$ventilationB1 == 1, "time"], color = "red", alpha = 0.4) +
+            geom_vline(xintercept = df_MainIndoorAir3[df_MainIndoorAir3$ventilationB2 == 1, "time"], color = "orange", alpha = 0.4) + 
+            labs(title="Smoothed CO2,  temperature, occupancy, and ventilation type A"))
+  })
+```
+
+```{r}
+df_MainIndoorAir3[df_MainIndoorAir3$time >= "2022-07-01 12:00:00" &
+                    df_MainIndoorAir3$time <= "2022-07-01 15:21:00", ]$ventMode <- "on, without AC" 
+df_MainIndoorAir3[df_MainIndoorAir3$time <= "2022-07-01 16:43:00" &
+                    df_MainIndoorAir3$time >= "2022-07-01 15:21:00", ]$ventMode <- "off" 
+```
+
+```{r}
+df_MainIndoorAir3$ventilationA <- ifelse(df_MainIndoorAir3$ventMode == "off", 0, 1)
+df_MainIndoorAir3$ventilationB1 <- ifelse(df_MainIndoorAir3$ventMode == "on, with AC", 1, 0)
+df_MainIndoorAir3$ventilationB2 <- ifelse(df_MainIndoorAir3$ventMode == "on, without AC", 1, 0)
+
+
+
+ 
+
+df_MainIndoorAir3 %>%
+  group_by(date) %>% 
+  do ({
+  
+    print(ggplot(.) +
+            geom_line(aes(x = time, y = inTemp), col = "blue") +
+            geom_line(aes(x = time, y = inCo2_mean12/30), col = "purple") +
+            geom_line(aes(x = time, y = people), col = "#0095A8") +
+            scale_y_continuous(name="Temperature",
+                               sec.axis = sec_axis(~.*30, name = "CO2")) +
+            geom_vline(xintercept = df_MainIndoorAir3[df_MainIndoorAir3$ventilationB1 == 1, "time"], color = "red", alpha = 0.4) +
+            geom_vline(xintercept = df_MainIndoorAir3[df_MainIndoorAir3$ventilationB2 == 1, "time"], color = "orange", alpha = 0.4) + 
+            labs(title="Smoothed CO2,  temperature, occupancy, and ventilation type A"))
+  })
+```
+
+```{r}
+# Merge the ventilation mode to the main 2-minute data set
+df2MinMainWeekday <- left_join(df2MinMainWeekday,
+                              df_MainIndoorAir3[, c(1,28:34)], by="time")
+```
+
+# 5: Data preparation for modelling
+
+## 2-min, OD, BC1, BC2, MC1, MC2, OC, OE
+
+```{r}
+# 2Minute non-overlapping data
+
+# remove observations with NA values in occupancy and lagged values of variables here
+df2MinMainWeekday <- df2MinMainWeekday[rowSums(is.na(df2MinMainWeekday)) == 0, ]  
+
+# reset index
+rownames(df2MinMainWeekday) <- NULL
+
+df2MinMainWeekday$people2Bin01 <- ifelse(df2MinMainWeekday$people2Bin=="empty",0,1)
+
+# Normalize data
+
+df2MinMainWeekday_N <- df2MinMainWeekday
+process <- preProcess(as.data.frame(df2MinMainWeekday_N), method=c("range"))
+
+df2MinMainWeekday_N <- predict(process, as.data.frame(df2MinMainWeekday_N))      
+
+# Save data
+write.csv(df2MinMainWeekday, "df2MinMainWeekday.csv", row.names = FALSE)
+write.csv(df2MinMainWeekday_N, "df2MinMainWeekday_N.csv", row.names = FALSE)
+```
+
+## 4-min, OD, BC1, BC2, MC1, MC2, OC, OE
+
+```{r}
+# 4minute non-overlapping data
+# Merge to 4min dataset
+
+# occupancy
+df4MinMain <- df_MainOccupancy
+
+# create 6-minutely average occupancy (last minute and this minute)
+
+df4MinMain <- df4MinMain %>%
+    mutate(people = (lag(people, 3)+
+                       lag(people, 2)+
+                       lag(people, 1)+
+                       people)/4)
+
+# indoor air 
+df4MinMain_IndoorAir <- as.data.frame(
+  df_MainIndoorAir %>%
+    summarize(time= seq(min(time), max(time), by = 120)) %>%
+    left_join(df_MainIndoorAir, by="time")
+)
+
+df4MinMain_IndoorAir <- na_interpolation(df4MinMain_IndoorAir)
+
+
+df4MinMain_IndoorAir <- df4MinMain_IndoorAir %>%
+    mutate(inCo2 = (lag(inCo2, 1)+
+                       inCo2)/2)
+
+df4MinMain_IndoorAir <- as.data.frame(
+  df4MinMain_IndoorAir %>%
+    summarize(time= seq(min(time), max(time), by = 240)) %>%
+    left_join(df4MinMain_IndoorAir, by="time")
+)
+
+# 30-min weather data to 1-minute, impute missing data using linear interpolation
+df4MinMain_Weather30Min <- as.data.frame(
+  df_MainWeather30Min %>%
+    summarize(time= seq(min(time), max(time), by = 60)) %>%
+    left_join(df_MainWeather30Min, by="time")
+)
+
+df4MinMain_Weather30Min <- na_interpolation(df4MinMain_Weather30Min)
+
+# hourly weather data to 1-minute, impute missing data using linear interpolation
+df4MinMain_WeatherHourly <- as.data.frame(
+  df_MainWeatherHourly %>%
+    summarize(time= seq(min(time), max(time), by = 60)) %>%
+    left_join(df_MainWeatherHourly, by="time")
+)
+
+df4MinMain_WeatherHourly <- na_interpolation(df4MinMain_WeatherHourly)
+
+# merge them in to one dataset
+df4MinMain <- df4MinMain %>%
+  right_join(df4MinMain_IndoorAir, by="time") %>%
+  left_join(df4MinMain_Weather30Min, by="time") %>%
+  left_join(df4MinMain_WeatherHourly, by="time")
+
+# Add periodic occupancy validation to data
+df4MinMain$peopleEvery30Min <- NA
+df4MinMain$dCo2since30Min <- NA
+df4MinMain$dMinSince30Min <- NA
+
+count <- 0
+for (i in 1:nrow(df4MinMain)) {
+
+  if (count == 0 & is.na(df4MinMain[i, "people"]) == FALSE) {
+    df4MinMain[i, "peopleEvery30Min"] <- df4MinMain[i, "people"]
+    df4MinMain[i, "dCo2since30Min"] <- 0
+    df4MinMain[i, "dMinSince30Min"] <- 0
+    count <- count + 1
+  }
+  else if (is.na(df4MinMain[i, "people"]) == FALSE) {
+    df4MinMain[i, "peopleEvery30Min"] <- df4MinMain[i-count, "peopleEvery30Min"]
+    df4MinMain[i, "dCo2since30Min"] <- df4MinMain[i, "inCo2"] - df4MinMain[i-count, "inCo2"]
+    df4MinMain[i, "dMinSince30Min"] <- count*2
+    count <- count + 1
+    if (count == 7) {
+      count <- 0
+    }
+
+  }
+  else {
+    count <- 0
+  }
+}
+
+
+### df4MinMainWeekday
+
+df4MinMainWeekday <- df4MinMain
+
+# here convert all occupancy in weekday and non-working hours to NA to help binning in this dataset
+df4MinMainWeekday[df4MinMainWeekday$weekDay!="weekday" | df4MinMainWeekday$workHour!="working", "people"]<- NA
+
+# look at histogram and summary to decide on data binning 2 bins and 3 bins (decide on equal width)
+ggplot(df4MinMainWeekday, aes(x=people)) + 
+  geom_histogram(fill="lightgreen", color="grey50")
+hist(df4MinMainWeekday$people)$count
+summary(df4MinMainWeekday$people)
+
+# binning to 2 (0 and 1 for empty (excluding me as a researcher always there), 2 and more is occupied)
+df4MinMainWeekday$people2Bin <- cut(df4MinMainWeekday$people, 
+                  breaks=c(0,2,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("empty","occupied"))
+
+# inspect bins
+summary(df4MinMainWeekday$people2Bin)
+
+df4MinMainWeekday$people2Bin01 <- ifelse(df4MinMainWeekday$people2Bin=="empty",0,1)
+
+
+# binning to 2 in a way that the target (without weekend and non-working hours) is equally divided (equal frequency)
+df4MinMainWeekday$people2EqualBin <- cut(df4MinMainWeekday$people, 
+                  breaks=c(0,4,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-3","4-and-higher"))
+
+# inspect bins
+summary(df4MinMainWeekday$people2EqualBin)
+
+# binning to 3 in a way that the target (without weekend and non-working hours) has equal width
+df4MinMainWeekday$people3Bin <- cut(df4MinMainWeekday$people, 
+                  breaks=c(0,10,20,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-9","10-to-19", "20-and-higher"))
+
+# inspect bins
+summary(df4MinMainWeekday$people3Bin)
+
+
+# binning to 3 in a way that the target (without weekend and non-working hours) is equally divided (equal frequency)
+df4MinMainWeekday$people3EqualBin <- cut(df4MinMainWeekday$people, 
+                  breaks=c(0,2,6,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-1","2-to-5", "6-and-higher"))
+
+# inspect bins
+summary(df4MinMainWeekday$people3EqualBin)
+
+
+# occupancy change
+df4MinMainWeekday$peopleChange <- factor(ifelse(df4MinMainWeekday$people >
+                                                  lag(df4MinMainWeekday$people,1), 
+                                                "increase", 
+                                                ifelse(df4MinMainWeekday$people ==
+                                                  lag(df4MinMainWeekday$people,1), 
+                                                "unchanged", 
+                                                "decrease")),
+                                         levels = c("decrease", "unchanged", "increase"))
+
+df4MinMainWeekday$halfHour <- round_date(df4MinMainWeekday$time+10*60, "30 minutes") 
+df4MinMainWeekday$halfHour2 <- format(strptime(df4MinMainWeekday$halfHour,"%Y-%m-%d %H:%M"),'%H:%M')
+
+
+
+
+# remove weekend and non-working hour in this dataset
+df4MinMainWeekday <- subset(df4MinMainWeekday, weekDay=="weekday" & workHour=="working")
+
+# remove observations with NA values in occupancy and lagged values of variables here
+df4MinMainWeekday <- df4MinMainWeekday[rowSums(is.na(df4MinMainWeekday)) == 0, ]  
+
+# reset index
+rownames(df4MinMainWeekday) <- NULL
+
+
+## Correlation between occupancy deltas and indoor, outdoor deltas
+df4MinMainWeekday_key <- c("people",
+             "inCo2", "inPressure", "inTemp", "inHumid", "inPart2_5", "inPart10",
+             "outHumid", "outTemp", "outPressure", "windSpeed")
+df4MinMainWeekday <- df4MinMainWeekday %>%
+    mutate(across(.cols = df4MinMainWeekday_key,
+                     .fns = list(dlag1 = function(x) x - lag(x, n = 1),
+                                 dlead1 = function(x) lead(x, n = 1) - x)))
+
+
+accummulatedvent4Min <- df2MinMainWeekday %>%
+  mutate(ventilationA_4Min = ventilationA + lag(ventilationA,1),
+         ventilationB1_4Min = ventilationB1 + lag(ventilationB1,1),
+         ventilationB2_4Min = ventilationB2 + lag(ventilationB2,1))
+accummulatedvent4Min <- accummulatedvent4Min[rowSums(is.na(accummulatedvent4Min)) == 0, ]  
+
+df4MinMainWeekday <- left_join(df4MinMainWeekday, 
+                                            accummulatedvent4Min[, c("time",
+                                            "ventilationA_4Min",
+                                            "ventilationB1_4Min",
+                                            "ventilationB2_4Min")], by="time")
+
+colnames(df4MinMainWeekday)[colnames(df4MinMainWeekday) == "ventilationA_4Min"]  <-
+  "ventilationA"
+colnames(df4MinMainWeekday)[colnames(df4MinMainWeekday) == "ventilationB1_4Min"]  <-
+  "ventilationB1"
+colnames(df4MinMainWeekday)[colnames(df4MinMainWeekday) == "ventilationB2_4Min"]  <-
+  "ventilationB2"
+df4MinMainWeekday$ventilationA <- df4MinMainWeekday$ventilationA *2
+df4MinMainWeekday$ventilationB1 <- df4MinMainWeekday$ventilationB1 *2
+df4MinMainWeekday$ventilationB2 <- df4MinMainWeekday$ventilationB2 *2
+
+# remove observations with NA values in occupancy and lagged values of variables here
+df4MinMainWeekday <- df4MinMainWeekday[rowSums(is.na(df4MinMainWeekday)) == 0, ]  
+
+# reset index
+rownames(df4MinMainWeekday) <- NULL
+
+# Normalize data
+
+df4MinMainWeekday_N <- df4MinMainWeekday
+process <- preProcess(as.data.frame(df4MinMainWeekday_N), method=c("range"))
+
+df4MinMainWeekday_N <- predict(process, as.data.frame(df4MinMainWeekday_N))      
+
+# Save data
+write.csv(df4MinMainWeekday, "df4MinMainWeekday.csv", row.names = FALSE)
+write.csv(df4MinMainWeekday_N, "df4MinMainWeekday_N.csv", row.names = FALSE)
+```
+
+
+
+## 6-min, OD, BC1, BC2, MC1, MC2, OC, OE
+```{r}
+# 6-minute non-overlapping data
+# Merge to 6-min dataset
+
+# occupancy
+df6MinMain <- df_MainOccupancy
+
+# create 6-minutely average occupancy (last minute and this minute)
+
+df6MinMain <- df6MinMain %>%
+    mutate(people = (lag(people, 5)+
+                       lag(people, 4)+
+                       lag(people, 3)+
+                       lag(people, 2)+
+                       lag(people, 1)+
+                       people)/6)
+
+# indoor air 
+df6MinMain_IndoorAir <- as.data.frame(
+  df_MainIndoorAir %>%
+    summarize(time= seq(min(time), max(time), by = 120)) %>%
+    left_join(df_MainIndoorAir, by="time")
+)
+
+df6MinMain_IndoorAir <- na_interpolation(df6MinMain_IndoorAir)
+
+
+df6MinMain_IndoorAir <- df6MinMain_IndoorAir %>%
+    mutate(inCo2 = (lag(inCo2, 2)+
+                       lag(inCo2, 1)+
+                       inCo2)/3)
+
+df6MinMain_IndoorAir <- as.data.frame(
+  df6MinMain_IndoorAir %>%
+    summarize(time= seq(min(time), max(time), by = 360)) %>%
+    left_join(df6MinMain_IndoorAir, by="time")
+)
+
+# 30-min weather data to 1-minute, impute missing data using linear interpolation
+df6MinMain_Weather30Min <- as.data.frame(
+  df_MainWeather30Min %>%
+    summarize(time= seq(min(time), max(time), by = 60)) %>%
+    left_join(df_MainWeather30Min, by="time")
+)
+
+df6MinMain_Weather30Min <- na_interpolation(df6MinMain_Weather30Min)
+
+# hourly weather data to 1-minute, impute missing data using linear interpolation
+df6MinMain_WeatherHourly <- as.data.frame(
+  df_MainWeatherHourly %>%
+    summarize(time= seq(min(time), max(time), by = 60)) %>%
+    left_join(df_MainWeatherHourly, by="time")
+)
+
+df6MinMain_WeatherHourly <- na_interpolation(df6MinMain_WeatherHourly)
+
+# merge them in to one dataset
+df6MinMain <- df6MinMain %>%
+  right_join(df6MinMain_IndoorAir, by="time") %>%
+  left_join(df6MinMain_Weather30Min, by="time") %>%
+  left_join(df6MinMain_WeatherHourly, by="time")
+
+# Add periodic occupancy validation to data
+df6MinMain$peopleEvery30Min <- NA
+df6MinMain$dCo2since30Min <- NA
+df6MinMain$dMinSince30Min <- NA
+
+count <- 0
+for (i in 1:nrow(df6MinMain)) {
+
+  if (count == 0 & is.na(df6MinMain[i, "people"]) == FALSE) {
+    df6MinMain[i, "peopleEvery30Min"] <- df6MinMain[i, "people"]
+    df6MinMain[i, "dCo2since30Min"] <- 0
+    df6MinMain[i, "dMinSince30Min"] <- 0
+    count <- count + 1
+  }
+  else if (is.na(df6MinMain[i, "people"]) == FALSE) {
+    df6MinMain[i, "peopleEvery30Min"] <- df6MinMain[i-count, "peopleEvery30Min"]
+    df6MinMain[i, "dCo2since30Min"] <- df6MinMain[i, "inCo2"] - df6MinMain[i-count, "inCo2"]
+    df6MinMain[i, "dMinSince30Min"] <- count*2
+    count <- count + 1
+    if (count == 5) {
+      count <- 0
+    }
+
+  }
+  else {
+    count <- 0
+  }
+}
+
+
+### df6MinMainWeekday
+
+df6MinMainWeekday <- df6MinMain
+
+# here convert all occupancy in weekday and non-working hours to NA to help binning in this dataset
+df6MinMainWeekday[df6MinMainWeekday$weekDay!="weekday" | df6MinMainWeekday$workHour!="working", "people"]<- NA
+
+# look at histogram and summary to decide on data binning 2 bins and 3 bins (decide on equal width)
+ggplot(df6MinMainWeekday, aes(x=people)) + 
+  geom_histogram(fill="lightgreen", color="grey50")
+hist(df6MinMainWeekday$people)$count
+summary(df6MinMainWeekday$people)
+
+# binning to 2 (0 and 1 for empty (excluding me as a researcher always there), 2 and more is occupied)
+df6MinMainWeekday$people2Bin <- cut(df6MinMainWeekday$people, 
+                  breaks=c(0,2,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("empty","occupied"))
+
+# inspect bins
+summary(df6MinMainWeekday$people2Bin)
+
+# binning to 2 in a way that the target (without weekend and non-working hours) is equally divided (equal frequency)
+df6MinMainWeekday$people2EqualBin <- cut(df6MinMainWeekday$people, 
+                  breaks=c(0,4,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-3","4-and-higher"))
+
+# inspect bins
+summary(df6MinMainWeekday$people2EqualBin)
+
+# binning to 3 in a way that the target (without weekend and non-working hours) has equal width
+df6MinMainWeekday$people3Bin <- cut(df6MinMainWeekday$people, 
+                  breaks=c(0,10,20,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-9","10-to-19", "20-and-higher"))
+
+# inspect bins
+summary(df6MinMainWeekday$people3Bin)
+
+
+# binning to 3 in a way that the target (without weekend and non-working hours) is equally divided (equal frequency)
+df6MinMainWeekday$people3EqualBin <- cut(df6MinMainWeekday$people, 
+                  breaks=c(0,2,6,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-1","2-to-5", "6-and-higher"))
+
+# inspect bins
+summary(df6MinMainWeekday$people3EqualBin)
+
+
+# occupancy change
+df6MinMainWeekday$peopleChange <- factor(ifelse(df6MinMainWeekday$people >
+                                                  lag(df6MinMainWeekday$people,1), 
+                                                "increase", 
+                                                ifelse(df6MinMainWeekday$people ==
+                                                  lag(df6MinMainWeekday$people,1), 
+                                                "unchanged", 
+                                                "decrease")),
+                                         levels = c("decrease", "unchanged", "increase"))
+
+df6MinMainWeekday$halfHour <- round_date(df6MinMainWeekday$time+10*60, "30 minutes") 
+df6MinMainWeekday$halfHour2 <- format(strptime(df6MinMainWeekday$halfHour,"%Y-%m-%d %H:%M"),'%H:%M')
+
+
+
+
+# remove weekend and non-working hour in this dataset
+df6MinMainWeekday <- subset(df6MinMainWeekday, weekDay=="weekday" & workHour=="working")
+
+# remove observations with NA values in occupancy and lagged values of variables here
+df6MinMainWeekday <- df6MinMainWeekday[rowSums(is.na(df6MinMainWeekday)) == 0, ]  
+
+# reset index
+rownames(df6MinMainWeekday) <- NULL
+
+
+## Correlation between occupancy deltas and indoor, outdoor deltas
+df6MinMainWeekday_key <- c("people",
+             "inCo2", "inPressure", "inTemp", "inHumid", "inPart2_5", "inPart10",
+             "outHumid", "outTemp", "outPressure", "windSpeed")
+df6MinMainWeekday <- df6MinMainWeekday %>%
+    mutate(across(.cols = df6MinMainWeekday_key,
+                     .fns = list(dlag1 = function(x) x - lag(x, n = 1),
+                                 dlead1 = function(x) lead(x, n = 1) - x)))
+
+
+accummulatedvent6Min <- df2MinMainWeekday %>%
+  mutate(ventilationA_6Min = ventilationA + lag(ventilationA,1) + lag(ventilationA,2),
+         ventilationB1_6Min = ventilationB1 + lag(ventilationB1,1) + lag(ventilationB1,2),
+         ventilationB2_6Min = ventilationB2 + lag(ventilationB2,1) + lag(ventilationB2,2))
+accummulatedvent6Min <- accummulatedvent6Min[rowSums(is.na(accummulatedvent6Min)) == 0, ]  
+
+df6MinMainWeekday <- left_join(df6MinMainWeekday, 
+                                            accummulatedvent6Min[, c("time",
+                                            "ventilationA_6Min",
+                                            "ventilationB1_6Min",
+                                            "ventilationB2_6Min")], by="time")
+
+colnames(df6MinMainWeekday)[colnames(df6MinMainWeekday) == "ventilationA_6Min"]  <-
+  "ventilationA"
+colnames(df6MinMainWeekday)[colnames(df6MinMainWeekday) == "ventilationB1_6Min"]  <-
+  "ventilationB1"
+colnames(df6MinMainWeekday)[colnames(df6MinMainWeekday) == "ventilationB2_6Min"]  <-
+  "ventilationB2"
+df6MinMainWeekday$ventilationA <- df6MinMainWeekday$ventilationA *2
+df6MinMainWeekday$ventilationB1 <- df6MinMainWeekday$ventilationB1 *2
+df6MinMainWeekday$ventilationB2 <- df6MinMainWeekday$ventilationB2 *2
+
+# remove observations with NA values in occupancy and lagged values of variables here
+df6MinMainWeekday <- df6MinMainWeekday[rowSums(is.na(df6MinMainWeekday)) == 0, ]  
+
+# reset index
+rownames(df6MinMainWeekday) <- NULL
+
+# Normalize data
+
+df6MinMainWeekday_N <- df6MinMainWeekday
+process <- preProcess(as.data.frame(df6MinMainWeekday_N), method=c("range"))
+
+df6MinMainWeekday_N <- predict(process, as.data.frame(df6MinMainWeekday_N))      
+
+# Save data
+write.csv(df6MinMainWeekday, "df6MinMainWeekday.csv", row.names = FALSE)
+write.csv(df6MinMainWeekday_N, "df6MinMainWeekday_N.csv", row.names = FALSE)
+```
+
+## 10-min, OD, BC1, BC2, MC1, MC2, OC, OE
+
+```{r}
+# 10minute non-overlapping data
+# Merge to 10min dataset
+
+# occupancy
+df10MinMain <- df_MainOccupancy
+
+# create 6-minutely average occupancy (last minute and this minute)
+
+df10MinMain <- df10MinMain %>%
+    mutate(people = (lag(people, 9)+
+                       lag(people, 8)+
+                       lag(people, 7)+
+                       lag(people, 6)+
+                       lag(people, 5)+
+                       lag(people, 4)+
+                       lag(people, 3)+
+                       lag(people, 2)+
+                       lag(people, 1)+
+                       people)/10)
+
+# indoor air 
+df10MinMain_IndoorAir <- as.data.frame(
+  df_MainIndoorAir %>%
+    summarize(time= seq(min(time), max(time), by = 120)) %>%
+    left_join(df_MainIndoorAir, by="time")
+)
+
+df10MinMain_IndoorAir <- na_interpolation(df10MinMain_IndoorAir)
+
+
+df10MinMain_IndoorAir <- df10MinMain_IndoorAir %>%
+    mutate(inCo2 = (lag(inCo2, 4)+
+                       lag(inCo2, 3)+
+                      lag(inCo2, 2)+
+                       lag(inCo2, 1)+
+                       inCo2)/5)
+
+df10MinMain_IndoorAir <- as.data.frame(
+  df10MinMain_IndoorAir %>%
+    summarize(time= seq(min(time), max(time), by = 600)) %>%
+    left_join(df10MinMain_IndoorAir, by="time")
+)
+
+# 30-min weather data to 1-minute, impute missing data using linear interpolation
+df10MinMain_Weather30Min <- as.data.frame(
+  df_MainWeather30Min %>%
+    summarize(time= seq(min(time), max(time), by = 60)) %>%
+    left_join(df_MainWeather30Min, by="time")
+)
+
+df10MinMain_Weather30Min <- na_interpolation(df10MinMain_Weather30Min)
+
+# hourly weather data to 1-minute, impute missing data using linear interpolation
+df10MinMain_WeatherHourly <- as.data.frame(
+  df_MainWeatherHourly %>%
+    summarize(time= seq(min(time), max(time), by = 60)) %>%
+    left_join(df_MainWeatherHourly, by="time")
+)
+
+df10MinMain_WeatherHourly <- na_interpolation(df10MinMain_WeatherHourly)
+
+# merge them in to one dataset
+df10MinMain <- df10MinMain %>%
+  right_join(df10MinMain_IndoorAir, by="time") %>%
+  left_join(df10MinMain_Weather30Min, by="time") %>%
+  left_join(df10MinMain_WeatherHourly, by="time")
+
+# Add periodic occupancy validation to data
+df10MinMain$peopleEvery30Min <- NA
+df10MinMain$dCo2since30Min <- NA
+df10MinMain$dMinSince30Min <- NA
+
+count <- 0
+for (i in 1:nrow(df10MinMain)) {
+
+  if (count == 0 & is.na(df10MinMain[i, "people"]) == FALSE) {
+    df10MinMain[i, "peopleEvery30Min"] <- df10MinMain[i, "people"]
+    df10MinMain[i, "dCo2since30Min"] <- 0
+    df10MinMain[i, "dMinSince30Min"] <- 0
+    count <- count + 1
+  }
+  else if (is.na(df10MinMain[i, "people"]) == FALSE) {
+    df10MinMain[i, "peopleEvery30Min"] <- df10MinMain[i-count, "peopleEvery30Min"]
+    df10MinMain[i, "dCo2since30Min"] <- df10MinMain[i, "inCo2"] - df10MinMain[i-count, "inCo2"]
+    df10MinMain[i, "dMinSince30Min"] <- count*2
+    count <- count + 1
+    if (count == 3) {
+      count <- 0
+    }
+
+  }
+  else {
+    count <- 0
+  }
+}
+
+
+### df10MinMainWeekday
+
+df10MinMainWeekday <- df10MinMain
+
+# here convert all occupancy in weekday and non-working hours to NA to help binning in this dataset
+df10MinMainWeekday[df10MinMainWeekday$weekDay!="weekday" | df10MinMainWeekday$workHour!="working", "people"]<- NA
+
+# look at histogram and summary to decide on data binning 2 bins and 3 bins (decide on equal width)
+ggplot(df10MinMainWeekday, aes(x=people)) + 
+  geom_histogram(fill="lightgreen", color="grey50")
+hist(df10MinMainWeekday$people)$count
+summary(df10MinMainWeekday$people)
+
+# binning to 2 (0 and 1 for empty (excluding me as a researcher always there), 2 and more is occupied)
+df10MinMainWeekday$people2Bin <- cut(df10MinMainWeekday$people, 
+                  breaks=c(0,2,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("empty","occupied"))
+
+# inspect bins
+summary(df10MinMainWeekday$people2Bin)
+
+# binning to 2 in a way that the target (without weekend and non-working hours) is equally divided (equal frequency)
+df10MinMainWeekday$people2EqualBin <- cut(df10MinMainWeekday$people, 
+                  breaks=c(0,4,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-3","4-and-higher"))
+
+# inspect bins
+summary(df10MinMainWeekday$people2EqualBin)
+
+# binning to 3 in a way that the target (without weekend and non-working hours) has equal width
+df10MinMainWeekday$people3Bin <- cut(df10MinMainWeekday$people, 
+                  breaks=c(0,10,20,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-9","10-to-19", "20-and-higher"))
+
+# inspect bins
+summary(df10MinMainWeekday$people3Bin)
+
+
+# binning to 3 in a way that the target (without weekend and non-working hours) is equally divided (equal frequency)
+df10MinMainWeekday$people3EqualBin <- cut(df10MinMainWeekday$people, 
+                  breaks=c(0,2,6,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-1","2-to-5", "6-and-higher"))
+
+# inspect bins
+summary(df10MinMainWeekday$people3EqualBin)
+
+
+# occupancy change
+df10MinMainWeekday$peopleChange <- factor(ifelse(df10MinMainWeekday$people >
+                                                  lag(df10MinMainWeekday$people,1), 
+                                                "increase", 
+                                                ifelse(df10MinMainWeekday$people ==
+                                                  lag(df10MinMainWeekday$people,1), 
+                                                "unchanged", 
+                                                "decrease")),
+                                         levels = c("decrease", "unchanged", "increase"))
+df10MinMainWeekday$halfHour <- round_date(df10MinMainWeekday$time+10*60, "30 minutes") 
+df10MinMainWeekday$halfHour2 <- format(strptime(df10MinMainWeekday$halfHour,"%Y-%m-%d %H:%M"),'%H:%M')
+
+
+
+
+# remove weekend and non-working hour in this dataset
+df10MinMainWeekday <- subset(df10MinMainWeekday, weekDay=="weekday" & workHour=="working")
+
+# remove observations with NA values in occupancy and lagged values of variables here
+df10MinMainWeekday <- df10MinMainWeekday[rowSums(is.na(df10MinMainWeekday)) == 0, ]  
+
+# reset index
+rownames(df10MinMainWeekday) <- NULL
+
+
+## Correlation between occupancy deltas and indoor, outdoor deltas
+df10MinMainWeekday_key <- c("people",
+             "inCo2", "inPressure", "inTemp", "inHumid", "inPart2_5", "inPart10",
+             "outHumid", "outTemp", "outPressure", "windSpeed")
+df10MinMainWeekday <- df10MinMainWeekday %>%
+    mutate(across(.cols = df10MinMainWeekday_key,
+                     .fns = list(dlag1 = function(x) x - lag(x, n = 1),
+                                 dlead1 = function(x) lead(x, n = 1) - x)))
+
+
+accummulatedvent10Min <- df2MinMainWeekday %>%
+  mutate(ventilationA_10Min = ventilationA + lag(ventilationA,1) + lag(ventilationA,2)
+         + lag(ventilationA,3) + lag(ventilationA,4),
+         ventilationB1_10Min = ventilationB1 + lag(ventilationB1,1) + lag(ventilationB1,2)
+         + + lag(ventilationB1,3) + lag(ventilationB1,4),
+         ventilationB2_10Min = ventilationB2 + lag(ventilationB2,1) + lag(ventilationB2,2)
+         + lag(ventilationB2,3) + lag(ventilationB2,4))
+accummulatedvent10Min <- accummulatedvent10Min[rowSums(is.na(accummulatedvent10Min)) == 0, ]  
+
+df10MinMainWeekday <- left_join(df10MinMainWeekday, 
+                                            accummulatedvent10Min[, c("time",
+                                            "ventilationA_10Min",
+                                            "ventilationB1_10Min",
+                                            "ventilationB2_10Min")], by="time")
+
+colnames(df10MinMainWeekday)[colnames(df10MinMainWeekday) == "ventilationA_10Min"]  <-
+  "ventilationA"
+colnames(df10MinMainWeekday)[colnames(df10MinMainWeekday) == "ventilationB1_10Min"]  <-
+  "ventilationB1"
+colnames(df10MinMainWeekday)[colnames(df10MinMainWeekday) == "ventilationB2_10Min"]  <-
+  "ventilationB2"
+df10MinMainWeekday$ventilationA <- df10MinMainWeekday$ventilationA *2
+df10MinMainWeekday$ventilationB1 <- df10MinMainWeekday$ventilationB1 *2
+df10MinMainWeekday$ventilationB2 <- df10MinMainWeekday$ventilationB2 *2
+
+# remove observations with NA values in occupancy and lagged values of variables here
+df10MinMainWeekday <- df10MinMainWeekday[rowSums(is.na(df10MinMainWeekday)) == 0, ]  
+
+# reset index
+rownames(df10MinMainWeekday) <- NULL
+
+# Normalize data
+
+df10MinMainWeekday_N <- df10MinMainWeekday
+process <- preProcess(as.data.frame(df10MinMainWeekday_N), method=c("range"))
+
+df10MinMainWeekday_N <- predict(process, as.data.frame(df10MinMainWeekday_N))      
+
+# Save data
+write.csv(df10MinMainWeekday, "df10MinMainWeekday.csv", row.names = FALSE)
+write.csv(df10MinMainWeekday_N, "df10MinMainWeekday_N.csv", row.names = FALSE)
+```
+
+## 14-min, OD, BC1, BC2, MC1, MC2, OC, OE
+
+```{r}
+# 14Minute non-overlapping data
+# Merge to 14Min dataset
+
+# occupancy
+df14MinMain <- df_MainOccupancy
+
+# create 14-minutely average occupancy (last minute and this minute)
+
+df14MinMain <- df14MinMain %>%
+    mutate(people = (lag(people, 13)+
+                       lag(people, 12)+
+                       lag(people, 11)+
+                       lag(people, 10)+
+                       lag(people, 9)+
+                       lag(people, 8)+
+                       lag(people, 7)+
+                       lag(people, 6)+
+                       lag(people, 5)+
+                       lag(people, 4)+
+                       lag(people, 3)+
+                       lag(people, 2)+
+                       lag(people, 1)+
+                       people)/14)
+
+# indoor air 
+df14MinMain_IndoorAir <- as.data.frame(
+  df_MainIndoorAir %>%
+    summarize(time= seq(min(time), max(time), by = 120)) %>%
+    left_join(df_MainIndoorAir, by="time")
+)
+
+df14MinMain_IndoorAir <- na_interpolation(df14MinMain_IndoorAir)
+
+
+df14MinMain_IndoorAir <- df14MinMain_IndoorAir %>%
+    mutate(inCo2 = (lag(inCo2, 6)+
+                       lag(inCo2, 5)+
+                      lag(inCo2, 4)+
+                      lag(inCo2, 3)+
+                      lag(inCo2, 2)+
+                       lag(inCo2, 1)+
+                       inCo2)/7)
+
+df14MinMain_IndoorAir <- as.data.frame(
+  df14MinMain_IndoorAir %>%
+    summarize(time= seq(min(time), max(time), by = 840)) %>%
+    left_join(df14MinMain_IndoorAir, by="time")
+)
+
+# 30-min weather data to 1-minute, impute missing data using linear interpolation
+df14MinMain_Weather30Min <- as.data.frame(
+  df_MainWeather30Min %>%
+    summarize(time= seq(min(time), max(time), by = 60)) %>%
+    left_join(df_MainWeather30Min, by="time")
+)
+
+df14MinMain_Weather30Min <- na_interpolation(df14MinMain_Weather30Min)
+
+# hourly weather data to 1-minute, impute missing data using linear interpolation
+df14MinMain_WeatherHourly <- as.data.frame(
+  df_MainWeatherHourly %>%
+    summarize(time= seq(min(time), max(time), by = 60)) %>%
+    left_join(df_MainWeatherHourly, by="time")
+)
+
+df14MinMain_WeatherHourly <- na_interpolation(df14MinMain_WeatherHourly)
+
+# merge them in to one dataset
+df14MinMain <- df14MinMain %>%
+  right_join(df14MinMain_IndoorAir, by="time") %>%
+  left_join(df14MinMain_Weather30Min, by="time") %>%
+  left_join(df14MinMain_WeatherHourly, by="time")
+
+# Add periodic occupancy validation to data
+df14MinMain$peopleEvery30Min <- NA
+df14MinMain$dCo2since30Min <- NA
+df14MinMain$dMinSince30Min <- NA
+
+count <- 0
+for (i in 1:nrow(df14MinMain)) {
+
+  if (count == 0 & is.na(df14MinMain[i, "people"]) == FALSE) {
+    df14MinMain[i, "peopleEvery30Min"] <- df14MinMain[i, "people"]
+    df14MinMain[i, "dCo2since30Min"] <- 0
+    df14MinMain[i, "dMinSince30Min"] <- 0
+    count <- count + 1
+  }
+  else if (is.na(df14MinMain[i, "people"]) == FALSE) {
+    df14MinMain[i, "peopleEvery30Min"] <- df14MinMain[i-count, "peopleEvery30Min"]
+    df14MinMain[i, "dCo2since30Min"] <- df14MinMain[i, "inCo2"] - df14MinMain[i-count, "inCo2"]
+    df14MinMain[i, "dMinSince30Min"] <- count*2
+    count <- count + 1
+    if (count == 2) {
+      count <- 0
+    }
+
+  }
+  else {
+    count <- 0
+  }
+}
+
+
+### df14MinMainWeekday
+
+df14MinMainWeekday <- df14MinMain
+
+# here convert all occupancy in weekday and non-working hours to NA to help binning in this dataset
+df14MinMainWeekday[df14MinMainWeekday$weekDay!="weekday" | df14MinMainWeekday$workHour!="working", "people"]<- NA
+
+# look at histogram and summary to decide on data binning 2 bins and 3 bins (decide on equal width)
+ggplot(df14MinMainWeekday, aes(x=people)) + 
+  geom_histogram(fill="lightgreen", color="grey50")
+hist(df14MinMainWeekday$people)$count
+summary(df14MinMainWeekday$people)
+
+# binning to 2 (0 and 1 for empty (excluding me as a researcher always there), 2 and more is occupied)
+df14MinMainWeekday$people2Bin <- cut(df14MinMainWeekday$people, 
+                  breaks=c(0,2,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("empty","occupied"))
+
+# inspect bins
+summary(df14MinMainWeekday$people2Bin)
+
+# binning to 2 in a way that the target (without weekend and non-working hours) is equally divided (equal frequency)
+df14MinMainWeekday$people2EqualBin <- cut(df14MinMainWeekday$people, 
+                  breaks=c(0,4,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-3","4-and-higher"))
+
+# inspect bins
+summary(df14MinMainWeekday$people2EqualBin)
+
+# binning to 3 in a way that the target (without weekend and non-working hours) has equal width
+df14MinMainWeekday$people3Bin <- cut(df14MinMainWeekday$people, 
+                  breaks=c(0,10,20,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-9","10-to-19", "20-and-higher"))
+
+# inspect bins
+summary(df14MinMainWeekday$people3Bin)
+
+
+# binning to 3 in a way that the target (without weekend and non-working hours) is equally divided (equal frequency)
+df14MinMainWeekday$people3EqualBin <- cut(df14MinMainWeekday$people, 
+                  breaks=c(0,2,6,31), 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=c("0-to-1","2-to-5", "6-and-higher"))
+
+# inspect bins
+summary(df14MinMainWeekday$people3EqualBin)
+
+
+# occupancy change
+df14MinMainWeekday$peopleChange <- factor(ifelse(df14MinMainWeekday$people >
+                                                  lag(df14MinMainWeekday$people,1), 
+                                                "increase", 
+                                                ifelse(df14MinMainWeekday$people ==
+                                                  lag(df14MinMainWeekday$people,1), 
+                                                "unchanged", 
+                                                "decrease")),
+                                         levels = c("decrease", "unchanged", "increase"))
+
+df14MinMainWeekday$halfHour <- round_date(df14MinMainWeekday$time+10*60, "30 minutes") 
+df14MinMainWeekday$halfHour2 <- format(strptime(df14MinMainWeekday$halfHour,"%Y-%m-%d %H:%M"),'%H:%M')
+
+
+
+
+# remove weekend and non-working hour in this dataset
+df14MinMainWeekday <- subset(df14MinMainWeekday, weekDay=="weekday" & workHour=="working")
+
+# remove observations with NA values in occupancy and lagged values of variables here
+df14MinMainWeekday <- df14MinMainWeekday[rowSums(is.na(df14MinMainWeekday)) == 0, ]  
+
+# reset index
+rownames(df14MinMainWeekday) <- NULL
+
+
+## Correlation between occupancy deltas and indoor, outdoor deltas
+df14MinMainWeekday_key <- c("people",
+             "inCo2", "inPressure", "inTemp", "inHumid", "inPart2_5", "inPart10",
+             "outHumid", "outTemp", "outPressure", "windSpeed")
+df14MinMainWeekday <- df14MinMainWeekday %>%
+    mutate(across(.cols = df14MinMainWeekday_key,
+                     .fns = list(dlag1 = function(x) x - lag(x, n = 1),
+                                 dlead1 = function(x) lead(x, n = 1) - x)))
+
+
+accummulatedvent14Min <- df2MinMainWeekday %>%
+  mutate(ventilationA_14Min = ventilationA + lag(ventilationA,1) + lag(ventilationA,2)
+         + lag(ventilationA,3) + lag(ventilationA,4)
+           + lag(ventilationA,5) + lag(ventilationA,6),
+         ventilationB1_14Min = ventilationB1 + lag(ventilationB1,1) + lag(ventilationB1,2)
+          + lag(ventilationB1,3) + lag(ventilationB1,4)
+         + lag(ventilationB1,5) + lag(ventilationB1,6),
+         ventilationB2_14Min = ventilationB2 + lag(ventilationB2,1) + lag(ventilationB2,2)
+         + lag(ventilationB2,3) + lag(ventilationB2,4)
+         + lag(ventilationB2,5) + lag(ventilationB2,6))
+accummulatedvent14Min <- accummulatedvent14Min[rowSums(is.na(accummulatedvent14Min)) == 0, ]  
+
+df14MinMainWeekday <- left_join(df14MinMainWeekday, 
+                                            accummulatedvent14Min[, c("time",
+                                            "ventilationA_14Min",
+                                            "ventilationB1_14Min",
+                                            "ventilationB2_14Min")], by="time")
+
+colnames(df14MinMainWeekday)[colnames(df14MinMainWeekday) == "ventilationA_14Min"]  <-
+  "ventilationA"
+colnames(df14MinMainWeekday)[colnames(df14MinMainWeekday) == "ventilationB1_14Min"]  <-
+  "ventilationB1"
+colnames(df14MinMainWeekday)[colnames(df14MinMainWeekday) == "ventilationB2_14Min"]  <-
+  "ventilationB2"
+df14MinMainWeekday$ventilationA <- df14MinMainWeekday$ventilationA *2
+df14MinMainWeekday$ventilationB1 <- df14MinMainWeekday$ventilationB1 *2
+df14MinMainWeekday$ventilationB2 <- df14MinMainWeekday$ventilationB2 *2
+
+# remove observations with NA values in occupancy and lagged values of variables here
+df14MinMainWeekday <- df14MinMainWeekday[rowSums(is.na(df14MinMainWeekday)) == 0, ]  
+
+# reset index
+rownames(df14MinMainWeekday) <- NULL
+
+# Normalize data
+
+df14MinMainWeekday_N <- df14MinMainWeekday
+process <- preProcess(as.data.frame(df14MinMainWeekday_N), method=c("range"))
+
+df14MinMainWeekday_N <- predict(process, as.data.frame(df14MinMainWeekday_N))      
+
+# Save data
+write.csv(df14MinMainWeekday, "df14MinMainWeekday.csv", row.names = FALSE)
+write.csv(df14MinMainWeekday_N, "df14MinMainWeekday_N.csv", row.names = FALSE)
+```
+# 5. Occupancy detection - 2 min
+
+```{r}
+# Data split
+testfor2min <- df2MinMainWeekday_N[1844:nrow(df2MinMainWeekday_N), ]
+trainfor2min <- df2MinMainWeekday_N[1:1843, ]
+
+## apply Grid Search with cross validation (time split)
+customFold2min <- createTimeSlices(y = trainfor2min$people, initialWindow = 368, 
+                                horizon = 368, fixedWindow = FALSE, skip = 368)
+
+
+set.seed(1001)
+
+
+# Keys
+
+keys0 <- c("inCo2")
+
+keys1 <- c("inCo2", "inTemp", "inHumid", "inPressure",
+          "outTemp", "outHumid", "outPressure", "windSpeed")
+
+keys2 <- c("inCo2_dlead1", "inTemp_dlead1", "inPressure_dlead1",
+          "outTemp_dlead1", "outHumid_dlead1", "outPressure_dlead1", "windSpeed_dlead1")
+
+keys3 <- c("ventilationA")
+
+keys4 <- c("ventilationB1", "ventilationB2")
+
+keys5 <- c("halfHour2", "dayOfWeek")
+
+keys6 <- c("peopleEvery30Min", "dCo2since30Min", "dMinSince30Min")
+
+keysused <- c("inCo2", "inTemp", "inHumid", "inPressure",
+          "outTemp", "outHumid", "outPressure", "windSpeed")
+
+
+```
+
+```{r}
+table(df2MinMainWeekday_N$people2Bin)
+table(df2MinMainWeekday_N$people2Bin01)
+
+
+
+
+ggplot(df2MinMainWeekday_N, aes(x=date)) + 
+  geom_histogram(data=df2MinMainWeekday_N[df2MinMainWeekday_N$people2Bin01==1,],fill = "red", alpha = 0.2, stat="count") +
+  geom_histogram(data=df2MinMainWeekday_N[df2MinMainWeekday_N$people2Bin01==0,],fill = "blue", alpha = 0.2, stat="count") 
+  
+summary(df2MinMainWeekday$people2Bin)
+
+
+
+ggplot(df2MinMainWeekday, aes(x=date, fill=people2Bin)) + 
+  geom_histogram(binwidth = 500, position = "fill", stat="count")
+
+ggsave("binary.png")
+```
+
+
+### XG - 2min
+
+```{r}
+xgb_train <- xgb.DMatrix(data = data.matrix(df2MinMainWeekday_N[, c(keysused)]), 
+                         label = df2MinMainWeekday_N[, "people2Bin01"])
+
+
+searchGrid <- expand.grid(max_depth = c(2, 3, 4, 5,6), #2, 3, 4, 5
+                          nrounds = (5:20) * 10,
+                          eta = c(0.01) #0.1, 0.01
+)
+
+system.time(
+rmseErrorsHyperpara <- apply(searchGrid, 1, function(paraList){
+  
+  #Extract Parameters to test
+  currentDepth <- paraList[["max_depth"]]
+  currentNround <- paraList[["nrounds"]]
+  currentEta <- paraList[["eta"]]
+
+  
+  od2xg <- xgb.cv(data = xgb_train, 
+                     max.depth = currentDepth, 
+                     folds = customFold2min$test, 
+                     nrounds = currentNround,
+                     objective = "binary:logistic",
+                     eta = currentEta,
+                  prediction =  TRUE,
+                  metrics = list("error", "auc"))
+  
+  xvalidationScores <- as.data.frame(od2xg$evaluation_log)
+  a <- tail(xvalidationScores$train_error_mean, 1)
+  b <- tail(xvalidationScores$test_error_mean,1)
+  output <- return(c(a, b, 
+                     currentDepth, currentNround, currentEta))}))
+
+
+output1 <- as.data.frame(t(rmseErrorsHyperpara))
+varnames <- c("train-error", "test-error", "Depth", "nround", "eta")
+names(output1) <- varnames
+```
+
+``` {r}
+### TEST
+test <- testfor2min
+train <- trainfor2min
+
+# define predictor and response variables in training set
+train_x <- data.matrix(train[,keysused])
+train_y <- train[,"people2Bin01"]
+
+# define predictor and response variables in testing set
+test_x <- data.matrix(test[,keysused])
+test_y <- test[, "people2Bin01"]
+
+# define final training and testing sets
+xgb_train <- xgb.DMatrix(data = train_x, label = train_y)
+xgb_test <- xgb.DMatrix(data = test_x, label = test_y)
+
+#defining a watchlist
+watchlist <- list(train=xgb_train, test=xgb_test)
+
+#fit XGBoost model and display training and testing data at each iteration
+set.seed(1001)
+model_ <- xgb.train(data = xgb_train, max.depth = 4, 
+                  watchlist=watchlist, nrounds = 70,
+                  eta = 0.01,
+                  objective = "binary:logistic")
+
+# predict
+pred_test <-  predict(model_, xgb_test)
+
+pred_test
+
+# convert
+
+
+pred_test <- factor(ifelse(pred_test>=0.5, 1, 0), levels = c(0, 1))
+  
+real_test <- as.factor(test_y)
+
+
+
+
+conf_mat = confusionMatrix(pred_test, real_test, positive="1")
+print(conf_mat)
+
+
+```
+
+```{r}
+imp <- xgb.importance(colnames(xgb_train), model = model_)
+imp
+```
+
+
+
+### RF - 2min
+
+```{r}
+#Create control function for training, search method is grid.
+control <- trainControl(method = "timeslice",
+                        initialWindow = 368,
+                        horizon = 368,
+                        fixedWindow = FALSE, 
+                        skip = 386,
+                        search='grid')
+#create tunegrid with 15 values from 1:15 for mtry to tunning model. Our train function will change number of entry variable at each split according to tunegrid. 
+tunegrid <- expand.grid(.mtry = (1:15)) 
+
+rf_gridsearch <- train(as.factor(people2Bin01) ~ ., 
+                       data = trainfor2min,
+                       method = 'rf',
+                       metric = 'Accuracy',
+                       tuneGrid = tunegrid,
+                       trControl = control)
+print(rf_gridsearch)
+```
+
+``` {r}
+### TEST
+
+test <- testfor2min
+train <- trainfor2min
+
+# define predictor and response variables in training set
+train_x <- train[,keysused]
+train_y <- as.factor(train$people2Bin01)
+
+# define predictor and response variables in testing set
+test_x <- data.matrix(test[,keysused])
+test_y <- test[, "people2Bin01"]
+
+# Fitting Random Forest to the train dataset
+set.seed(120)  # Setting seed
+model_ <- randomForest(x = train_x,
+                      y = train_y ,
+                      ntree = 500, 
+                       mtry = 6)
+  
+  
+
+# Predicting the Test set results
+pred_test <-  predict(model_, test_x)
+
+#pred_test <- factor(ifelse(pred_test>=0.5, 1, 0), levels = c(0, 1))
+# xgboost returns possibilities so  it needs rules to divide into 0 or 1, not here for RF
+  
+real_test <- as.factor(test_y)
+  
+# Confusion Matrix
+conf_mat = confusionMatrix(pred_test, real_test, positive="1")
+print(conf_mat)
+  
+# Plotting model
+plot(model_)
+  
+# Importance plot
+importance(model_)
+  
+# Variable importance plot
+varImpPlot(model_)
+
+
+
+
+
+
+
+
+
+
+
+
+```
+
+
+```{r}
+### SVM
+
+### TEST
+```
+
+
+
+
+```{r}
+
+keys1 <- c("inCo2", "inTemp", "inHumid", "inPressure",
+          "outTemp", "outHumid", "outPressure", "windSpeed")
+
+keys2 <- c("inCo2_dlead1", "inTemp_dlead1", "inPressure_dlead1",
+          "outTemp_dlead1", "outHumid_dlead1", "outPressure_dlead1", "windSpeed_dlead1")
+
+keys3 <- c("ventilationA")
+
+keys4 <- c("ventilationB1", "ventilationB2")
+
+keys5 <- c("halfHour2", "dayOfWeek")
+
+keys6 <- c("peopleEvery30Min", "dCo2since30Min", "dMinSince30Min")
+```
+
+
+
+
+## Logistic regression - 2min 
+
+```{r}
+
+set.seed(1000)
+myTimeControl <- trainControl(method = "timeslice",
+                              initialWindow = 368,
+                              horizon = 368,
+                              fixedWindow = FALSE,
+                              skip = 368)
+
+model_ <- train(as.factor(people2Bin01) ~ inCo2 + ventilationB1 + ventilationB2 +
+                  inCo2+ inTemp+ inHumid+ inPressure+
+          outTemp+ outHumid+ outPressure+ windSpeed,
+                data = trainfor2min, 
+                family = "binomial",
+                method = "glm",
+          trControl= myTimeControl)
+
+summary(model_)$coefficients
+
+# predict
+pred_test <- predict(model_, newdata = testfor2min)
+
+pred_test
+
+# convert
+real_test <- as.factor(test_y)
+
+
+conf_mat = confusionMatrix(pred_test, real_test, positive="1")
+print(conf_mat)
+```
+
+
+
+## SVM - 2min 
+
+```{r}
+set.seed(1000)
+myTimeControl <- trainControl(method = "timeslice",
+                              initialWindow = 368,
+                              horizon = 368,
+                              fixedWindow = FALSE,
+                              skip = 368)
+model_ <- svm(formula = as.factor(people2Bin01) ~ inCo2, 
+              type = "C-classification", 
+              kernel = "polynomial", degree = 2,
+              data = trainfor2min,
+              trControl = myTimeControl)
+
+
+summary(model_)$coefficients
+
+# predict
+pred_test <- predict(model_, newdata = testfor2min)
+
+pred_test
+
+# convert
+real_test <- as.factor(test_y)
+
+
+conf_mat = confusionMatrix(pred_test, real_test, positive="1")
+print(conf_mat)
+```
+
+
+# 6.  Occupancy multi-class (equal width) 
+
+```{r}
+df2MinMainWeekday_N$people3Bin012 <- as.integer(ifelse(df2MinMainWeekday_N[, "people3Bin"]=="0-to-9",
+                                            0, 
+                                            ifelse(df2MinMainWeekday_N[,"people3Bin"]=="10-to-19",1,2)))
+
+
+```
+
+```{r}
+# Data split
+testfor2min <- df2MinMainWeekday_N[1844:nrow(df2MinMainWeekday_N), ]
+trainfor2min <- df2MinMainWeekday_N[1:1843, ]
+
+## apply Grid Search with cross validation (time split)
+customFold2min <- createTimeSlices(y = trainfor2min$people, initialWindow = 368, 
+                                horizon = 368, fixedWindow = FALSE, skip = 368)
+
+
+set.seed(1001)
+
+
+# Keys
+
+keys0 <- c("inCo2")
+
+keys1 <- c("inCo2", "inTemp", "inHumid", "inPressure",
+          "outTemp", "outHumid", "outPressure", "windSpeed")
+
+keys2 <- c("inCo2_dlead1", "inTemp_dlead1", "inPressure_dlead1",
+          "outTemp_dlead1", "outHumid_dlead1", "outPressure_dlead1", "windSpeed_dlead1")
+
+keys3 <- c("ventilationA")
+
+keys4 <- c("ventilationB1", "ventilationB2")
+
+keys5 <- c("halfHour2", "dayOfWeek")
+
+keys6 <- c("peopleEvery30Min", "dCo2since30Min", "dMinSince30Min")
+
+keysused <- c( "ventilationB1", "ventilationB2",
+              "inCo2", "inTemp", "inHumid", "inPressure",
+          "outTemp", "outHumid", "outPressure","windSpeed",
+          "halfHour2", "dayOfWeek",
+          "peopleEvery30Min", "dCo2since30Min", "dMinSince30Min")
+
+
+```
+
+```{r}
+table(df2MinMainWeekday_N$people3Bin)
+table(df2MinMainWeekday_N$people3EqualBin)
+
+
+
+ggplot(df2MinMainWeekday, aes(x=date, fill=people3Bin)) + 
+  geom_histogram(binwidth = 500, position = "fill", stat="count")
+
+
+ggsave("3-class.png")
+```
+
+
+### XG - 2min
+
+```{r}
+xgb_train <- xgb.DMatrix(data = data.matrix(df2MinMainWeekday_N[, c(keysused)]), 
+                         label = df2MinMainWeekday_N[, "people3Bin012"])
+
+
+searchGrid <- expand.grid(max_depth = c(2, 3, 4, 5), #2, 3, 4, 5
+                          nrounds = (5:30) * 5,
+                          eta = c(0.01) #0.1, 0.01
+)
+
+system.time(
+rmseErrorsHyperpara <- apply(searchGrid, 1, function(paraList){
+  
+  #Extract Parameters to test
+  currentDepth <- paraList[["max_depth"]]
+  currentNround <- paraList[["nrounds"]]
+  currentEta <- paraList[["eta"]]
+
+  
+  numberOfClasses <- length(unique(df2MinMainWeekday_N[, "people3Bin012"]))
+  xgb_params <- list("objective" = "multi:softprob",
+                   "eval_metric" = "merror",
+                   "num_class" = numberOfClasses)
+  
+  oc2xg <- xgb.cv(data = xgb_train, 
+                     max.depth = currentDepth, 
+                     folds = customFold2min$test, 
+                     nrounds = currentNround,
+                     params = xgb_params,
+                     eta = currentEta,
+                  #verbose = FALSE,
+                  prediction = TRUE)
+  
+  xvalidationScores <- as.data.frame(oc2xg$evaluation_log)
+  a <- tail(xvalidationScores$train_merror_mean, 1)
+  b <- tail(xvalidationScores$test_merror_mean,1)
+  output <- return(c(a, b, 
+                     currentDepth, currentNround, currentEta))}))
+
+
+output1 <- as.data.frame(t(rmseErrorsHyperpara))
+varnames <- c("train-merror", "test-merror", "Depth", "nround", "eta")
+names(output1) <- varnames
+```
+
+``` {r}
+train_label <- unique(train[,"people3Bin012"])
+
+### TEST
+test <- testfor2min
+train <- trainfor2min
+
+# define predictor and response variables in training set
+train_x <- data.matrix(train[,keysused])
+train_y <- as.integer(train[,"people3Bin012"])-1
+
+# define predictor and response variables in testing set
+test_x <- data.matrix(test[,keysused])
+test_y <- as.integer(test[, "people3Bin012"])-1
+
+# define final training and testing sets
+xgb_train <- xgb.DMatrix(data = train_x, label = train_y)
+xgb_test <- xgb.DMatrix(data = test_x, label = test_y)
+
+#defining a watchlist
+watchlist <- list(train=xgb_train, test=xgb_test)
+
+#fit XGBoost model and display training and testing data at each iteration
+set.seed(1001)
+
+numberOfClasses <- length(unique(df2MinMainWeekday_N[, "people3Bin012"]))
+xgb_params <- list("objective" = "multi:softprob",
+                 "eval_metric" = "merror",
+                 "num_class" = 3)
+  
+model_ <- xgb.train(data = xgb_train, max.depth = 2, 
+                  watchlist=watchlist, nrounds = 90,
+                  eta = 0.01,
+                  params = xgb_params,
+                  prediction=TRUE)
+
+model_
+
+
+importance_matrix <- xgb.importance(
+  feature_names = colnames(xgb_train), 
+  model = model_
+)
+importance_matrix
+
+xgb.plot.importance(importance_matrix)
+
+# predict
+xgb_preds <- predict(model_, as.matrix(test_x), reshape = TRUE)
+xgb_preds <- as.data.frame(xgb_preds)
+colnames(xgb_preds) <- levels(df2MinMainWeekday_N$people3Bin)
+xgb_preds
+
+# convert
+
+xgb_preds$PredictedClass <- apply(xgb_preds, 1, function(y)colnames(xgb_preds)[which.max(y)])
+xgb_preds$ActualClass <- levels(df2MinMainWeekday_N$people3Bin)[test_y + 1]
+
+xgb_preds
+```
+
+```{r}
+accuracy <- sum(xgb_preds$PredictedClass == xgb_preds$ActualClass) / nrow(xgb_preds)
+accuracy
+```
+
+```{r}
+confusionMatrix(as.factor(xgb_preds$ActualClass), as.factor(xgb_preds$PredictedClass))
+
+table(factor(xgb_preds$PredictedClass, levels(df2MinMainWeekday_N$people3Bin)), 
+      factor(xgb_preds$ActualClass, levels(df2MinMainWeekday_N$people3Bin)))
+```
+
+
+
+# 7. Occupancy multi-class (equal frequency)
+
+
+
+```{r}
+df2MinMainWeekday_N$people3EqualBinn <- ifelse(df2MinMainWeekday_N[, "people3EqualBin"]=="0-to-1", 0,                 ifelse(df2MinMainWeekday_N[,"people3EqualBin"]=="2-to-5",1,2))
+
+
+```
+
+```{r}
+# Data split
+testfor2min <- df2MinMainWeekday_N[1844:nrow(df2MinMainWeekday_N), ]
+trainfor2min <- df2MinMainWeekday_N[1:1843, ]
+
+## apply Grid Search with cross validation (time split)
+customFold2min <- createTimeSlices(y = trainfor2min$people, initialWindow = 368, 
+                                horizon = 368, fixedWindow = FALSE, skip = 368)
+
+
+set.seed(1001)
+
+
+# Keys
+
+keys0 <- c("inCo2")
+
+keys1 <- c("inCo2", "inTemp", "inHumid", "inPressure",
+          "outTemp", "outHumid", "outPressure", "windSpeed")
+
+keys2 <- c("inCo2_dlead1", "inTemp_dlead1", "inPressure_dlead1",
+          "outTemp_dlead1", "outHumid_dlead1", "outPressure_dlead1", "windSpeed_dlead1")
+
+keys3 <- c("ventilationA")
+
+keys4 <- c("ventilationB1", "ventilationB2")
+
+keys5 <- c("halfHour2", "dayOfWeek")
+
+keys6 <- c("peopleEvery30Min", "dCo2since30Min", "dMinSince30Min")
+
+keysused <- c("inCo2", "ventilationB1", "ventilationB2",
+              "halfHour2", "dayOfWeek",
+              "peopleEvery30Min", "dCo2since30Min", "dMinSince30Min")
+
+
+```
+
+```{r}
+table(df2MinMainWeekday_N$people3Bin)
+table(df2MinMainWeekday_N$people3EqualBin)
+
+
+
+  ggplot(df2MinMainWeekday, aes(x=date, fill=people3EqualBin)) + 
+    geom_histogram(binwidth = 500, position = "fill", stat="count")
+
+
+ggsave("3-class-equal.png")
+```
+
+### XG - 2min
+
+```{r}
+xgb_train <- xgb.DMatrix(data = data.matrix(df2MinMainWeekday_N[, c(keysused)]), 
+                         label = df2MinMainWeekday_N[, "people3EqualBinn"])
+
+
+searchGrid <- expand.grid(max_depth = c(2, 3, 4, 5), #2, 3, 4, 5
+                          nrounds = (5:40) * 5,
+                          eta = c(0.01, 0.1) #0.1, 0.01
+)
+
+system.time(
+rmseErrorsHyperpara <- apply(searchGrid, 1, function(paraList){
+  
+  #Extract Parameters to test
+  currentDepth <- paraList[["max_depth"]]
+  currentNround <- paraList[["nrounds"]]
+  currentEta <- paraList[["eta"]]
+
+  
+  numberOfClasses <- length(unique(df2MinMainWeekday_N[, "people3EqualBin012"]))
+  xgb_params <- list("objective" = "multi:softprob",
+                   "eval_metric" = "merror",
+                   "num_class" = numberOfClasses)
+  
+  oc2xg <- xgb.cv(data = xgb_train, 
+                     max.depth = currentDepth, 
+                     folds = customFold2min$test, 
+                     nrounds = currentNround,
+                     params = xgb_params,
+                     eta = currentEta,
+                  #verbose = FALSE,
+                  prediction = TRUE)
+  
+  xvalidationScores <- as.data.frame(oc2xg$evaluation_log)
+  a <- tail(xvalidationScores$train_merror_mean, 1)
+  b <- tail(xvalidationScores$test_merror_mean,1)
+  output <- return(c(a, b, 
+                     currentDepth, currentNround, currentEta))}))
+
+
+output1 <- as.data.frame(t(rmseErrorsHyperpara))
+varnames <- c("train-merror", "test-merror", "Depth", "nround", "eta")
+names(output1) <- varnames
+```
+
+``` {r}
+train_label <- c(0,1,2)
+### TEST
+test <- testfor2min
+train <- trainfor2min
+
+# define predictor and response variables in training set
+train_x <- data.matrix(train[,keysused])
+train_y <- as.integer(train[,"people3EqualBinn"])
+
+# define predictor and response variables in testing set
+test_x <- data.matrix(test[,keysused])
+test_y <- as.integer(test[, "people3EqualBinn"])
+
+# define final training and testing sets
+xgb_train <- xgb.DMatrix(data = train_x, label = train_y)
+xgb_test <- xgb.DMatrix(data = test_x, label = test_y)
+
+#defining a watchlist
+watchlist <- list(train=xgb_train, test=xgb_test)
+
+#fit XGBoost model and display training and testing data at each iteration
+set.seed(1002)
+
+numberOfClasses <- length(unique(df2MinMainWeekday_N[, "people3EqualBinn"]))
+xgb_params <- list("objective" = "multi:softprob",
+                 "eval_metric" = "merror",
+                 "num_class" = numberOfClasses)
+  
+model_ <- xgb.train(data = xgb_train, max.depth = 3, 
+                  watchlist=watchlist, nrounds = 195,
+                  eta = 0.01,
+                  params = xgb_params,
+                  prediction=TRUE)
+
+model_
+
+
+importance_matrix <- xgb.importance(
+  feature_names = colnames(xgb_train), 
+  model = model_
+)
+importance_matrix
+
+xgb.plot.importance(importance_matrix)
+
+# predict
+xgb_preds <- predict(model_, as.matrix(test_x), reshape = TRUE)
+xgb_preds <- as.data.frame(xgb_preds)
+colnames(xgb_preds) <- levels(df2MinMainWeekday_N$people3EqualBin)
+xgb_preds
+
+# convert
+
+xgb_preds$PredictedClass <- apply(xgb_preds, 1, function(y)colnames(xgb_preds)[which.max(y)])
+xgb_preds$ActualClass <- levels(df2MinMainWeekday_N$people3EqualBin)[test_y + 1]
+
+xgb_preds
+```
+
+```{r}
+accuracy <- sum(xgb_preds$PredictedClass == xgb_preds$ActualClass) / nrow(xgb_preds)
+accuracy
+```
+
+```{r}
+confusionMatrix(as.factor(xgb_preds$ActualClass), as.factor(xgb_preds$PredictedClass))
+
+table(factor(xgb_preds$PredictedClass, levels(df2MinMainWeekday_N$people3Binn)), 
+      factor(xgb_preds$ActualClass, levels(df2MinMainWeekday_N$people3Binn)))
+```
+
+
+
