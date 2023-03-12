@@ -26,15 +26,16 @@ This repository contains 3 main folders:
     + processed (filtered selected data based on study scope, study goals and data processing trials)
     + final (the data set ready for modelling)
 - **src**, including: 
-- **deliverables**, including:
+- **deliverables**[^1], including:
     + project-summary (the final defense in which I summarize the whole project)  
-    **_Note:_** For the full detailed report (study), please leave a message at my LinkedIn page or send me an email.
 - **media** (media files)
 ## ✌️ Result?
  (with some visuals?)
  them vao screenshot nhè nhẹ một cái dòng comment xuất sắc từ Burak và second supervisors 
  Here are final remarks I received from the two supervisors:
- > comment from Burak 
+ > comment from Burak  
  > second comment
 
 ## 🪁 Future?
+
+[^1]: For the full detailed report (study), please leave a message at my LinkedIn page or send me an email.
