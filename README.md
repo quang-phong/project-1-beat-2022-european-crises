@@ -1,5 +1,5 @@
 <h1> <b> Beat 2022 European Crises </b>
-<img align='right' src="https://raw.githubusercontent.com/quang-phong/personal-resources/main/winter-heat-white.gif" width="400px">
+<img align='right' src="https://user-images.githubusercontent.com/54467883/224517067-dbb1df4a-98f4-497b-bdb1-09b142d90d7a.gif" width="400px">
 </h1>
 
 [![Linkedin Badge](https://img.shields.io/badge/-@quangphong-0072b1?style=flat&logo=LinkedIn&link=https://www.linkedin.com/in/quangphong/)](https://www.linkedin.com/in/quangphong/) 
