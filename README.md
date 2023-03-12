@@ -7,17 +7,17 @@
 [![Email Badge](https://img.shields.io/badge/-quangtrieuphong@outlook.com-00a2ed?style=flat&logo=microsoftoutlook&logoColor=white&link=mailto:quangtrieuphong@outlook.com)](mailto:quangtrieuphong@outlook.com)
 
 
-Project: 
+
 Author: Quang Phong
+Year: 2022
 
-
-## What
+## 🧐 What?
 (introduction, abstract, co scope)
-## Why
+## 🤷 Why?
 
-## How
+## ⚒️ How?
 
-## Repo structure
+## 🧱 Structure?
 This repository contains 3 main folders:
 - **data**:
     + raw (external data, and primary data in their rawest formats)
@@ -28,6 +28,7 @@ This repository contains 3 main folders:
 - **deliverable** (study defense in which I summarize the whole project)
 For full report (thesis), please leave a message at my LinkedIn or email me).
 
-## Result (with some visuals?)
+## ✌️ Result?
+ (with some visuals?)
 
-## Future recommendation
+## 🪁 Future?
