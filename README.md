@@ -1,4 +1,5 @@
-<h1> <b> Beat 2022 European Crises </b>
+<h1> Beat 2022 European Crises 
+<img src="https://user-images.githubusercontent.com/54467883/224519718-d237f1cb-d31d-4c3f-b97e-c46d3902b770.gif" width="30px">
 <img align='right' src="https://user-images.githubusercontent.com/54467883/224517067-dbb1df4a-98f4-497b-bdb1-09b142d90d7a.gif" width="400px">
 </h1>
 
