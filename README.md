@@ -20,15 +20,16 @@ Year: 2022
 
 ## 🧱 Structure?
 This repository contains 3 main folders:
-- **data**:
+- **data**, including:
     + raw (external data, and primary data in their rawest formats)
     + temp (temporary data sets which only function to support data processing decisions)
     + processed (filtered selected data based on study scope, study goals and data processing trials)
     + final (the data set ready for modelling)
-- **src** 
-- **deliverable** (study defense in which I summarize the whole project)
-For full report (thesis), please leave a message at my LinkedIn or email me).
-
+- **src**, including: 
+- **deliverables**, including:
+    + project-summary (the final defense in which I summarize the whole project)
+    *Note:* For the full detailed report (study), please leave a message at my LinkedIn page or send me an email.
+- **media** (media files)
 ## ✌️ Result?
  (with some visuals?)
 
