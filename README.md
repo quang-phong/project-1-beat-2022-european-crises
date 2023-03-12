@@ -28,7 +28,7 @@ This repository contains 3 main folders:
 - **src**, including: 
 - **deliverables**, including:
     + project-summary (the final defense in which I summarize the whole project)  
-    <u>*Note:*</u> For the full detailed report (study), please leave a message at my LinkedIn page or send me an email.
+    <span style="color:blue">Note: </span>For the full detailed report (study), please leave a message at my LinkedIn page or send me an email.
 - **media** (media files)
 ## ✌️ Result?
  (with some visuals?)
