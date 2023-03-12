@@ -28,13 +28,13 @@ This repository contains 3 main folders:
 - **src**, including: 
 - **deliverables**, including:
     + project-summary (the final defense in which I summarize the whole project)  
-    ![Note](https://img.shields.io/badge/-Note:-000000?style=flat) For the full detailed report (study), please leave a message at my LinkedIn page or send me an email.
+    **_Note:_** For the full detailed report (study), please leave a message at my LinkedIn page or send me an email.
 - **media** (media files)
 ## ✌️ Result?
  (with some visuals?)
  them vao screenshot nhè nhẹ một cái dòng comment xuất sắc từ Burak và second supervisors 
  Here are final remarks I received from the two supervisors:
- 1
- 2
+ > comment from Burak 
+ > second comment
 
 ## 🪁 Future?
