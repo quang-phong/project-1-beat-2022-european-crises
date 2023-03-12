@@ -2,11 +2,12 @@
 <img src="https://user-images.githubusercontent.com/54467883/224519718-d237f1cb-d31d-4c3f-b97e-c46d3902b770.gif" width="80px">
 </h1>
 
+<img align='right' src="https://user-images.githubusercontent.com/54467883/224517067-dbb1df4a-98f4-497b-bdb1-09b142d90d7a.gif" width="400px">
+
 [![Linkedin Badge](https://img.shields.io/badge/-@quangphong-0072b1?style=flat&logo=LinkedIn&link=https://www.linkedin.com/in/quangphong/)](https://www.linkedin.com/in/quangphong/) 
 [![Github Badge](https://img.shields.io/badge/-@quang--phong-171515?style=flat&logo=github&logoColor=white&link=https://github.com/quang-phong?tab=repositories)](https://github.com/quang-phong?tab=repositories)
 [![Email Badge](https://img.shields.io/badge/-quangtrieuphong@outlook.com-00a2ed?style=flat&logo=microsoftoutlook&logoColor=white&link=mailto:quangtrieuphong@outlook.com)](mailto:quangtrieuphong@outlook.com)
 
-<img align='right' src="https://user-images.githubusercontent.com/54467883/224517067-dbb1df4a-98f4-497b-bdb1-09b142d90d7a.gif" width="400px">
 
 Author: Quang Phong  
 Year: 2022
