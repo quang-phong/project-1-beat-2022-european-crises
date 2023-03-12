@@ -26,10 +26,10 @@ This repository contains 3 main folders:
     + processed (filtered selected data based on study scope, study goals and data processing trials)
     + final (the data set ready for modelling)
 - **src**, including: 
-- **deliverables**[^1], including:
+- **deliverables**, including:
     + project-summary (the final defense in which I summarize the whole project)  
-    > **Note**
-    > For the full detailed report (study), please leave a message at my LinkedIn page or send me an email.
+    > **Note**  
+    > For the full detailed report (study), you can email or leave a message at my LinkedIn.
 - **media** (media files)
 ## ✌️ Result?
  (with some visuals?)
@@ -40,4 +40,3 @@ This repository contains 3 main folders:
 
 ## 🪁 Future?
 
-[^1]: For the full detailed report (study), please leave a message at my LinkedIn page or send me an email.
