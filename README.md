@@ -51,8 +51,6 @@ In summary, the project has succeeded in detecting and estimating the number of 
 - **Academic contributions**: The study provides a big primary dataset of occupancy, indoor air, and outdoor atmosphere. It applies insights from theories and studies on occupancy detection to a modern indoor space.  
 - **Practical contributions**: The evidence of obtaining occupancy detection and classification model has been provided. Also, the study points out key issues that might help the process of developing this application.
 
-them xiu visuals
-
 On a more personal note, the project has received positive feedback from examiners and supervisors. Here are some of the remarks:
  > "**Fantastic work and very independent study** with detailed analysis on multiple aspects of indoor quality." 
 
