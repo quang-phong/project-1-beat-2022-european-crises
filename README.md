@@ -42,7 +42,7 @@ This repository contains 4 folders:
 ## ✌️ Result?  
 
 <p align="center" width="100%">
-    <img src="https://github.com/quang-phong/project-1-beat-2022-european-crises/blob/main/media/img/halfHourOcc.jpg" width="60%">
+    <img src="https://github.com/quang-phong/project-1-beat-2022-european-crises/blob/main/media/img/halfHourOcc.png" width="60%">
     <em>Average occupancy at any point of time per 30 minutes</em>
 </p>
 
