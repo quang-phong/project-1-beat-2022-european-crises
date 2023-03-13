@@ -21,7 +21,7 @@ Given the energy crisis facing European countries in the heat of summer 2022, an
 ## ⚒️ How?  
 Data collections of occupancy, indoor air data, and weather data were conducted in 3 weeks with the support of sensors. Following that, descriptive analytics, statistical and machine learning models were implemented. Ensemble models as well as single ML models would be applied.  
 <p align="center" width="100%">
-    <img src="https://github.com/quang-phong/project-1-beat-2022-european-crises/blob/main/media/img/layout.jpg" width="60%">
+    <img src="https://github.com/quang-phong/project-1-beat-2022-european-crises/blob/main/media/img/layout.jpg" width="60%">  
     <em>Layout of the indoor area</em>
 </p>
 
@@ -42,7 +42,7 @@ This repository contains 4 folders:
 ## ✌️ Result?  
 
 <p align="center" width="100%">
-    <img src="https://github.com/quang-phong/project-1-beat-2022-european-crises/blob/main/media/img/halfHourOcc.png" width="60%">
+    <img src="https://github.com/quang-phong/project-1-beat-2022-european-crises/blob/main/media/img/halfHourOcc.png" width="60%">  
     <em>Average occupancy at any point of time per 30 minutes</em>
 </p>
 
