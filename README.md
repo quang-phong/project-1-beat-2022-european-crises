@@ -21,9 +21,9 @@ Given the energy crisis facing European countries in the heat of summer 2022, an
 ## ⚒️ How?  
 Data collections of occupancy, indoor air data, and weather data were conducted in 3 weeks with the support of sensors. Following that, descriptive analytics, statistical and machine learning models were implemented. Ensemble models as well as single ML models would be applied.  
 <p align="center" width="100%">
-    <img src="https://github.com/quang-phong/project-1-beat-2022-european-crises/blob/main/media/img/layout.jpg" width="60%">  
+    <img src="https://github.com/quang-phong/project-1-beat-2022-european-crises/blob/main/media/img/layout.jpg" width="60%"> <br> 
+    <em>Layout of the indoor area</em>
 </p>
-<em>Layout of the indoor area</em>
 
 ## 🧱 Structure?
 This repository contains 4 folders:
@@ -42,9 +42,9 @@ This repository contains 4 folders:
 ## ✌️ Result?  
 
 <p align="center" width="100%">
-    <img src="https://github.com/quang-phong/project-1-beat-2022-european-crises/blob/main/media/img/halfHourOcc.png" width="60%">  
+    <img src="https://github.com/quang-phong/project-1-beat-2022-european-crises/blob/main/media/img/halfHourOcc.png" width="60%"> <br>  
+    <em>Average occupancy at any point of time per 30 minutes</em>
 </p>
-<em>Average occupancy at any point of time per 30 minutes</em>
 
 In summary, the project has succeeded in detecting and estimating the number of occupants with high accuracy. Regarding occupancy detection, most of the models return an accuracy around 80% to 90%, which is acceptable for a large room. As for the occupancy classification, the best model reach the accuracy of 70% for every 2-minute observation, even better than other models with more indoor and outdoor variables as well as contextual information.
 
