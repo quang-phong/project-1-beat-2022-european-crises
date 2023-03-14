@@ -32,7 +32,8 @@ This repository contains 4 folders:
     + temp (temporary data sets which only function to support data processing decisions)
     + processed (filtered selected data based on study scope, study goals and data processing trials)
     + final (the data set ready for modelling)
-- **src**, including: 
+- **src**, including:
+    + final-data-processing-and-modelling (main data processing and modelling codes)
 - **deliverables**, including:
     + project-summary (the final defense in which I summarize the whole project)  
     > **Note**  
